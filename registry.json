@@ -62,8 +62,8 @@
     {
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
-      "description": "GitLab MR review-feedback responder: Claude triage decides ACT vs SKIP, then (if ACT) checks out the source branch and pushes a fixup commit.",
-      "version": "0.2.1",
+      "description": "5-step GitLab MR review responder: ingest \u2192 Claude triage+fix \u2192 reply \u2192 Teams notify \u2192 cleanup. Reads all comments holistically.",
+      "version": "0.3.0",
       "author": "forge",
       "tags": [
         "gitlab",

@@ -1,226 +1,237 @@
 name: mr-review-fix
-description: "GitLab MR review-feedback responder. Claude triages each new comment based on your natural-language instructions, then (if actionable) checks out the source branch and pushes a fixup commit."
+description: "5-step GitLab MR review-feedback responder: ingest → Claude triages all comments + fixes → reply on MR → notify Teams → cleanup."
 
-# Wired to either:
-#   A) gitlab.list_my_todos  (action_name=review_submitted, target_type=MergeRequest)
-#   B) gitlab.list_mr_notes  (per-MR poll; project_id + mr_iid pinned in source_input)
-#
-# Both shapes are covered by the input_template baked into the recipes
-# under recipes/gitlab-*-watch/recipe.yaml.
+# Wired to a Job whose source is gitlab.list_mr_notes (single-MR watch)
+# or gitlab.list_my_todos (all-MR watch). Recipe input_template fills:
+#   project, mr_iid, gitlab_project_id, feedback, reviewer, mr_url,
+#   triage_instructions (optional)
 #
 # Prereqs:
-#   - `glab` CLI authenticated (`brew install glab && glab auth login`).
-#   - Local project's git remote `origin` points at the same GitLab host.
+#   - glab CLI authenticated  (brew install glab && glab auth login)
+#   - jq  (brew install jq)
+#   - The local project's git remote `origin` points at the same GitLab host
 
 input:
   project: "Local Forge project name (e.g. FortiNAC)"
   mr_iid: "GitLab MR iid"
-  gitlab_project_id: "GitLab numeric project id"
-  feedback: "The reviewer's comment body"
-  reviewer: "Username of who left the feedback"
-  action: "Todo action_name (review_submitted | mentioned | ...) — or 'manual' for testing"
-  mr_title: "MR title for context"
-  mr_url: "URL to the MR"
-  # Free-form instructions for the triage node. Describe in plain text
-  # WHEN to act and WHEN to skip. Leave empty for sensible defaults
-  # (skip self / system / lgtm / approvals; act on substantive feedback).
-  # Example:
-  #   "Only act if the comment points at a specific code defect or test
-  #    gap. Skip nits about formatting, naming style, comments-only,
-  #    'looks good' / approvals, and anything from @ci-bot."
+  gitlab_project_id: "GitLab project — numeric id OR namespace/repo path"
+  feedback: "The new comment that triggered this run"
+  reviewer: "Username of the comment author"
+  mr_url: "Full MR URL (used in Teams notification)"
+  # Free-form policy passed to the AI triage step. Leave empty for
+  # sensible defaults (skip self/system/lgtm/approvals; act on
+  # substantive defects).
   triage_instructions: ""
 
 nodes:
-  # ── 1. Triage — Claude reads the comment and decides ACT vs SKIP ──
+  # ── 1. Ingest — fetch MR metadata, all comments, the diff ──
   #
-  # Replaces the old vars-based regex/whitelist machinery with a single
-  # natural-language gate. The user describes their policy in plain
-  # text; Claude applies judgment per comment. Falls back to sensible
-  # defaults when triage_instructions is empty.
-  triage:
+  # Single source of truth for everything downstream nodes need: source
+  # branch, target branch, comment history, the current diff. Writes
+  # them to /tmp files so Claude can read them in step 2 without
+  # blowing up the prompt.
+  ingest:
+    project: "{{input.project}}"
+    worktree: false
+    mode: shell
+    prompt: |
+      set -e
+      PROJECT_ID="{{input.gitlab_project_id}}"
+      MR_IID="{{input.mr_iid}}"
+      # URL-encode namespace/repo style ids for the API path.
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
+      META=/tmp/mr-${MR_IID}-meta.json
+      NOTES=/tmp/mr-${MR_IID}-notes.json
+      DIFF=/tmp/mr-${MR_IID}-diff.txt
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" > "$META"
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes?per_page=100&sort=asc" > "$NOTES"
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/changes" \
+        --jq '.changes[] | "=== \(.new_path) ===\n\(.diff)"' > "$DIFF"
+      SRC=$(jq -r '.source_branch' "$META")
+      TGT=$(jq -r '.target_branch' "$META")
+      TITLE=$(jq -r '.title' "$META")
+      AUTHOR=$(jq -r '.author.username' "$META")
+      # Stable KEY=value lines downstream nodes parse via:
+      #   eval "$(echo "$CTX" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      echo "SOURCE_BRANCH=${SRC}"
+      echo "TARGET_BRANCH=${TGT}"
+      echo "MR_TITLE=${TITLE}"
+      echo "MR_AUTHOR=${AUTHOR}"
+      echo "META_FILE=${META}"
+      echo "NOTES_FILE=${NOTES}"
+      echo "DIFF_FILE=${DIFF}"
+    outputs:
+      - name: ctx
+        extract: stdout
+
+  # ── 2. Triage + Fix — Claude reads everything, decides, fixes ──
+  #
+  # ONE Claude node handles the whole "is this actionable + apply the
+  # fix" loop. Reads the comment history holistically — not just the
+  # one note that triggered this run — so if a reviewer asked for X
+  # five comments ago and another comment already addressed X, the
+  # triage knows.
+  #
+  # Worktree: orchestrator creates `.forge/worktrees/mr-<iid>` on
+  # branch `mr-{{input.mr_iid}}`. Claude first aligns that branch with
+  # origin/<source_branch> (so the fix is built on the right base),
+  # then edits, commits, pushes HEAD back to the MR's source_branch.
+  triage-and-fix:
     project: "{{input.project}}"
     branch: "mr-{{input.mr_iid}}"
+    depends_on: [ingest]
     prompt: |
-      You are deciding whether a GitLab MR review comment requires a
-      code fix in this branch.
+      You're addressing review feedback on GitLab MR
+      !{{input.mr_iid}} — "{{input.feedback}}" was the new comment
+      from @{{input.reviewer}} that triggered this run.
 
-      ## User's triage policy
+      ## Triage policy
       {{input.triage_instructions}}
 
-      (If the section above is blank, use these defaults:
-       - SKIP if the reviewer is the MR author themselves (self-loop).
-       - SKIP if the comment is GitLab-generated (label changes, "marked
-         as draft", "requested review from X", etc.).
-       - SKIP approvals / acks / emoji-only / "lgtm" / "thanks".
-       - SKIP nits that don't point at a specific code defect.
-       - ACT on substantive feedback that names a bug, missing test,
-         needed refactor, or specific code change.)
+      (If the above is blank, use defaults: ACT only on substantive
+       feedback that names a concrete defect, missing test, security
+       concern, or specific refactor request. SKIP self-comments,
+       system notes, "lgtm" / approvals, style nits, comments that
+       just ask questions without proposing a fix.)
 
-      ## Comment context
-      MR:       !{{input.mr_iid}} — {{input.mr_title}}
-      Reviewer: @{{input.reviewer}}
-      Action:   {{input.action}}
+      ## Files at your disposal
+      Parse the ingest output (key=value lines):
 
-      Body:
       ```
-      {{input.feedback}}
+      {{nodes.ingest.outputs.ctx}}
       ```
 
-      ## Output format
-      Write a one- or two-sentence reasoning above, then end with
-      EXACTLY one of these lines on its own:
+      That gives you `SOURCE_BRANCH`, `TARGET_BRANCH`, `MR_TITLE`,
+      `MR_AUTHOR`, plus paths to:
+        - `META_FILE`  — full MR metadata (JSON)
+        - `NOTES_FILE` — all comments on the MR, sorted ascending
+                         (latest at the bottom). Each entry has
+                         `body, author, system, created_at`. Skip
+                         entries where `system: true`.
+        - `DIFF_FILE`  — current diff being reviewed
 
-        DECISION: ACT
-        DECISION: SKIP
+      ## Your task
+      1. Read NOTES_FILE + DIFF_FILE. Analyze the comments
+         **holistically** — the comment that triggered this run is the
+         last one, but earlier comments may already be addressed,
+         contradicted, or relevant context.
+      2. Decide ACT vs SKIP per the triage policy.
 
-      No code, no tool calls, no file edits in this step — that comes
-      later if you decide ACT.
+      ### If SKIP
+      Write 1-3 sentences explaining why (will be posted on the MR by
+      the next step). End your reply with EXACTLY this line on its
+      own:
+          ACTION: skipped
+
+      ### If ACT
+      a. Align the orchestrator-managed worktree with `origin/$SOURCE_BRANCH`:
+           cd "$FORGE_WORKTREE"        # already in the worktree
+           git fetch origin "$SOURCE_BRANCH"
+           git reset --hard "origin/$SOURCE_BRANCH"
+      b. Make ONLY the changes the comments call for. Stay narrow —
+         do not touch unrelated files.
+      c. Commit + push to the MR's source branch:
+           git add -A
+           git commit -m "fix: address review feedback on !{{input.mr_iid}}"
+           git push origin "HEAD:$SOURCE_BRANCH"
+      d. Write 1-3 sentences summarizing what you changed (will be
+         posted on the MR). End your reply with EXACTLY this line on
+         its own:
+            ACTION: pushed
+
+      The downstream `reply` node greps for `ACTION: pushed` or
+      `ACTION: skipped` to decide what to post — keep the marker on
+      its own line at the very end of your reply.
     outputs:
       - name: reasoning
         extract: result
 
-  # ── 2. Gate — grep the triage reasoning for DECISION: ACT/SKIP ──
-  # The orchestrator's output schema doesn't expose a regex `pattern`
-  # extractor yet, so we grep the full reasoning text instead of
-  # plucking a single token. Claude is instructed to end with one of:
-  #   DECISION: ACT
-  #   DECISION: SKIP
-  gate:
-    mode: shell
-    project: "{{input.project}}"
-    worktree: false
-    depends_on: [triage]
-    prompt: |
-      REASONING=$(cat <<'FORGE_REASONING_EOF'
-      {{nodes.triage.outputs.reasoning}}
-      FORGE_REASONING_EOF
-      )
-      if echo "$REASONING" | grep -Eq '(^|[[:space:]])DECISION:[[:space:]]*ACT([[:space:]]|$)'; then
-        echo "PROCEED — Claude triage said ACT"
-      elif echo "$REASONING" | grep -Eq '(^|[[:space:]])DECISION:[[:space:]]*SKIP([[:space:]]|$)'; then
-        echo "SKIP by triage. Reasoning:"
-        echo "$REASONING"
-        exit 1
-      else
-        echo "Triage produced no DECISION: ACT|SKIP line — defaulting to SKIP for safety."
-        echo "Reasoning was:"
-        echo "$REASONING"
-        exit 1
-      fi
-    outputs:
-      - name: status
-        extract: stdout
-
-  # ── 3. Find the MR's source branch via GitLab API ──────
-  resolve-branch:
-    mode: shell
-    project: "{{input.project}}"
-    worktree: false
-    depends_on: [gate]
-    prompt: |
-      SRC=$(glab api "projects/{{input.gitlab_project_id}}/merge_requests/{{input.mr_iid}}" --jq '.source_branch') && \
-      if [ -z "$SRC" ]; then echo "ERROR: failed to resolve source_branch" && exit 1; fi && \
-      echo "$SRC"
-    outputs:
-      - name: source_branch
-        extract: stdout
-
-  # ── 4. Checkout the MR's source branch in an isolated worktree ──
-  checkout:
-    mode: shell
-    project: "{{input.project}}"
-    branch: "mr-{{input.mr_iid}}"
-    depends_on: [resolve-branch]
-    prompt: |
-      git fetch origin && \
-      git checkout "{{nodes.resolve-branch.outputs.source_branch}}" && \
-      git pull --ff-only origin "{{nodes.resolve-branch.outputs.source_branch}}" && \
-      echo "HEAD: $(git rev-parse --short HEAD) on $(git branch --show-current)"
-    outputs:
-      - name: head
-        extract: stdout
-
-  # ── 5. Dump the current MR diff so Claude sees what reviewer saw ──
-  fetch-diff:
-    mode: shell
-    project: "{{input.project}}"
-    branch: "mr-{{input.mr_iid}}"
-    depends_on: [checkout]
-    prompt: |
-      glab api "projects/{{input.gitlab_project_id}}/merge_requests/{{input.mr_iid}}/changes" \
-        --jq '.changes[] | "=== \(.new_path) ===\n\(.diff)"' > "/tmp/mr-{{input.mr_iid}}-diff.txt" && \
-      wc -l "/tmp/mr-{{input.mr_iid}}-diff.txt"
-    outputs:
-      - name: meta
-        extract: stdout
-
-  # ── 6. Claude applies the fix ───────────────────────
-  apply-fix:
-    project: "{{input.project}}"
-    branch: "mr-{{input.mr_iid}}"
-    depends_on: [fetch-diff]
-    prompt: |
-      You're addressing a review comment on GitLab MR !{{input.mr_iid}}
-      — "{{input.mr_title}}".
-
-      The triage step already decided this comment is actionable:
-      ```
-      {{nodes.triage.outputs.reasoning}}
-      ```
-
-      ## Reviewer feedback (from @{{input.reviewer}})
-      ```
-      {{input.feedback}}
-      ```
-
-      ## Current MR diff
-      Full diff at `/tmp/mr-{{input.mr_iid}}-diff.txt`. Read it first.
-
-      ## Task
-      1. Understand the existing diff.
-      2. Apply ONLY the change(s) the reviewer asked for. Stay narrow —
-         do NOT touch unrelated files; do NOT amend the previous commit;
-         make a new commit so history reflects the response.
-      3. End with `ACTION: changes` if you made edits, `ACTION: none`
-         if you concluded nothing actionable after closer inspection
-         (rare — triage already gated this).
-
-  # ── 7. Commit + push (or skip if no edits) ─────────────
-  commit-push:
-    mode: shell
-    project: "{{input.project}}"
-    branch: "mr-{{input.mr_iid}}"
-    depends_on: [apply-fix]
-    prompt: |
-      if [ -z "$(git status --porcelain)" ]; then
-        echo "STATUS=no-changes" && exit 0
-      fi && \
-      git add -A && \
-      git commit -m "fix: address review feedback from @{{input.reviewer}} on !{{input.mr_iid}}" \
-                 -m "{{input.feedback}}" && \
-      git push origin "{{nodes.resolve-branch.outputs.source_branch}}" && \
-      echo "STATUS=pushed" && \
-      git log -1 --oneline
-    outputs:
-      - name: status
-        extract: stdout
-
-  # ── 8. Post a reply note so reviewer sees the response ──
+  # ── 3. Reply on the MR ───────────────────────────────────
+  #
+  # Post Claude's reasoning back as a comment so the reviewer can see
+  # the outcome. The body branches on the ACTION: marker.
   reply:
-    mode: shell
     project: "{{input.project}}"
     worktree: false
-    depends_on: [commit-push]
+    depends_on: [triage-and-fix]
+    mode: shell
     prompt: |
-      STATUS_OUT="{{nodes.commit-push.outputs.status}}"
-      if echo "$STATUS_OUT" | grep -q "STATUS=no-changes"; then
-        echo "No code changes — not posting reply" && exit 0
+      set -e
+      PROJECT_ID="{{input.gitlab_project_id}}"
+      MR_IID="{{input.mr_iid}}"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
+      REASONING=$(cat <<'FORGE_R_EOF'
+      {{nodes.triage-and-fix.outputs.reasoning}}
+      FORGE_R_EOF
+      )
+      if echo "$REASONING" | grep -Eq '(^|[[:space:]])ACTION:[[:space:]]*pushed([[:space:]]|$)'; then
+        BODY="🤖 Forge: 已根据 @{{input.reviewer}} 的反馈推送 fixup commit。\n\n${REASONING}"
+        STATUS="pushed"
+      elif echo "$REASONING" | grep -Eq '(^|[[:space:]])ACTION:[[:space:]]*skipped([[:space:]]|$)'; then
+        BODY="🤖 Forge: 已 review 这条评论,**判断无需修改**。\n\n${REASONING}"
+        STATUS="skipped"
+      else
+        BODY="⚠️ Forge: triage 未输出 ACTION 标记,需要人工 review。\n\n${REASONING}"
+        STATUS="unknown"
       fi
-      BODY="🤖 Forge: 已根据 @{{input.reviewer}} 的反馈推送了一个 fixup commit,请 review。"
-      glab api "projects/{{input.gitlab_project_id}}/merge_requests/{{input.mr_iid}}/notes" \
-        -X POST -f body="$BODY" \
-        --jq '.id' && \
-      echo "Reply posted"
+      echo "STATUS=${STATUS}"
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes" \
+        -X POST -f body="$(printf '%b' "$BODY")" --jq '.id' \
+        && echo "REPLY_POSTED=true" \
+        || echo "REPLY_POSTED=false"
     outputs:
-      - name: posted
+      - name: result
+        extract: stdout
+
+  # ── 4. Notify Teams ──────────────────────────────────────
+  #
+  # Best-effort. If the teams connector isn't set up the curl will
+  # fail and we log + continue — don't fail the pipeline over a
+  # notification.
+  notify:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [reply]
+    mode: shell
+    prompt: |
+      set +e
+      INFO=$'{{nodes.ingest.outputs.ctx}}'
+      eval "$(echo "$INFO" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      STATUS_OUT=$'{{nodes.reply.outputs.result}}'
+      eval "$(echo "$STATUS_OUT" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      MSG="🤖 Forge auto-handled MR review comment: ${MR_TITLE} (${STATUS:-?})
+
+      Reviewer: @{{input.reviewer}}
+      MR: {{input.mr_url}}"
+      PAYLOAD=$(jq -n --arg user "$MR_AUTHOR" --arg msg "$MSG" \
+        '{plugin_id:"teams", tool:"send_message", input:{chat_name:$user, message:$msg}}')
+      curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD" \
+        > /dev/null 2>&1 \
+        && echo "Notified @${MR_AUTHOR} on Teams" \
+        || echo "Teams notify skipped (connector not set up or unreachable)"
+    outputs:
+      - name: status
+        extract: stdout
+
+  # ── 5. Cleanup ───────────────────────────────────────────
+  cleanup:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [notify]
+    mode: shell
+    prompt: |
+      set +e
+      ROOT=$(git rev-parse --show-toplevel)
+      WT="$ROOT/.forge/worktrees/mr-{{input.mr_iid}}"
+      if [ -d "$WT" ]; then
+        git worktree remove --force "$WT" 2>/dev/null \
+          && echo "Removed worktree $WT" \
+          || echo "Worktree $WT not removed (may still hold local changes)"
+      fi
+      git worktree prune
+      rm -f /tmp/mr-{{input.mr_iid}}-meta.json /tmp/mr-{{input.mr_iid}}-notes.json /tmp/mr-{{input.mr_iid}}-diff.txt
+      echo "Cleanup done"
+    outputs:
+      - name: status
         extract: stdout
