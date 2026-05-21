@@ -5,7 +5,7 @@ description: |
   Each new review note dispatches the `mr-review-fix` pipeline — Claude
   reads the comment + the current MR diff, edits files in the matching
   local project, and pushes a fixup commit.
-version: "0.1.0"
+version: "0.2.0"
 author: "forge"
 tags: ["gitlab", "mr", "claude-code", "review"]
 
@@ -32,6 +32,15 @@ params:
     label: "Poll interval (minutes)"
     type: number
     default: 5
+
+  - name: triage_instructions
+    label: "Triage policy (free-form, optional)"
+    help: |
+      Describe in plain text WHEN Claude should act vs skip. Leave
+      empty to use defaults (skip self/system/approvals/lgtm). Example:
+      "Only act if the reviewer points at a specific code defect or
+      missing test. Skip style nits, comments-only changes, and any
+      message from @ci-bot."
 
 job:
   name_template: "mr-watch-{{params.project}}-{{params.mr_iid}}"
@@ -64,3 +73,4 @@ job:
       feedback: "{{item.body}}"
       is_system: "{{item.system}}"
       action: "review_submitted"
+      triage_instructions: "{{params.triage_instructions}}"

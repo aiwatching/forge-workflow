@@ -14,7 +14,7 @@ description: |
   Dependencies: glab CLI authenticated; mr-review-fix pipeline
   installed locally (auto-installed when this recipe runs the first
   time, or via Marketplace).
-version: "0.1.0"
+version: "0.2.0"
 author: "forge"
 tags: ["gitlab", "mr", "claude-code", "review", "auto"]
 
@@ -54,6 +54,16 @@ params:
     type: number
     default: 5
 
+  - name: triage_instructions
+    label: "Triage policy (free-form, optional)"
+    help: |
+      Describe in plain text WHEN Claude should act vs skip on a new
+      review comment. Leave empty to use defaults (skip self/system/
+      approvals/lgtm). Example:
+      "Only act on comments that name a concrete bug, missing test,
+      or required refactor. Skip nits about style or naming, comments
+      flagged as suggestions only, and approvals."
+
 job:
   name_template: "watch-my-mrs-{{params.project}}"
   enabled: true
@@ -85,3 +95,4 @@ job:
       reviewer: "{{item.author.username}}"
       feedback: "{{item.body}}"
       is_system: ""
+      triage_instructions: "{{params.triage_instructions}}"
