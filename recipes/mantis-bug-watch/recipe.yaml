@@ -83,6 +83,18 @@ job:
     assignee: "{{params.assignee}}"
     fix_schedule: "{{params.fix_schedule}}"
     project_name: "{{params.mantis_project}}"
+    # Skip bugs that have already been resolved/fixed. The pipeline
+    # sets resolution=fixed on success, so without this filter Forge
+    # would keep picking up its own already-handled bugs.
+    # search_bugs doesn't have a top-level `resolution` parameter — we
+    # forward via extra_params (passed verbatim as Mantis filter URL
+    # params). resolution[]=10 = "open" in standard MantisBT.
+    extra_params:
+      resolution[]: 10
+    # First tick: register every match as "seen" without dispatching.
+    # Stops a "Mantis has 200 unfixed bugs" backfill stampede when
+    # the Job is first created.
+    __mark_existing_as_seen: true
   items_path: "bugs"
   dedup_field: "id"
 

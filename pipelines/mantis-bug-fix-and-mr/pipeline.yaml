@@ -234,6 +234,40 @@ nodes:
     outputs:
       - name: details
         extract: stdout
+
+  # ── Claim the bug (NEW) ──────────────────────────────────────
+  # Move status → feedback so other watchers see Forge is working on
+  # this bug. Fire-and-forget best-effort — failure just logs a WARN.
+  # Independent of the skip-if-handled check: that's done inside the
+  # fix-code prompt so Claude can also factor in semantic content.
+  claim:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - fetch-bug-details
+    prompt: |
+      set +e
+      BUG_ID="{{input.bug_id}}"
+      PAYLOAD=$(jq -n --argjson bug "$BUG_ID" \
+        '{plugin_id:"mantis", tool:"update_bug", input:{bug_id:$bug, status:"feedback"}}')
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD" 2>&1)
+      RC=$?
+      if [ $RC -ne 0 ] || [ "$(echo "$RESP" | jq -r '.is_error // false' 2>/dev/null)" = "true" ]; then
+        echo "WARN: status update failed — $(echo "$RESP" | jq -r '.content // .error // "bridge unreachable"' 2>/dev/null | head -c 200)" >&2
+        echo "CLAIMED=false"
+        echo "=== RESULT ==="
+        echo "Bug #${BUG_ID} status NOT moved to feedback (best-effort; see WARN above)"
+      else
+        echo "CLAIMED=true"
+        echo "=== RESULT ==="
+        echo "Bug #${BUG_ID} status moved to feedback"
+      fi
+    outputs:
+      - name: result
+        extract: stdout
+
   download-attachments:
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
     worktree: false
@@ -363,6 +397,19 @@ nodes:
       from the target base branch). You are running headless — make the fix
 
       yourself, stage + commit.
+
+
+      ## FIRST — skip-if-handled check
+
+      Before doing anything, read the latest non-system bugnotes in
+      DETAILS / NOTES below. If the latest activity indicates someone
+      already handled this (Forge previously fixed it, a human
+      committed/merged a fix, the issue was marked won't-fix /
+      duplicate / abandoned, etc.), DO NOT edit files or commit.
+      Just write one paragraph explaining what you saw in the notes
+      and end your reply. The pipeline's downstream nodes detect
+      "no commits added" automatically and skip MR creation +
+      surface a Mantis bugnote noting the skip.
 
 
       ## Bug
@@ -741,9 +788,58 @@ nodes:
     outputs:
       - name: mr
         extract: stdout
+
+  # ── Mark fixed (NEW) ────────────────────────────────────────
+  # Only run on the success path: push-and-mr produced an MR_URL.
+  # Set the Mantis bug's resolution → fixed. Status stays at
+  # 'feedback' (claim moved it there earlier) so a reviewer can move
+  # to resolved/closed after they verify the MR. Best-effort.
+  mark-fixed:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - push-and-mr
+    prompt: |
+      set +e
+      BUG_ID="{{input.bug_id}}"
+      MR_OUT=$'{{nodes.push-and-mr.outputs.mr}}'
+      eval "$(echo "$MR_OUT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+
+      if [ -z "${MR_URL:-}" ]; then
+        echo "SKIP — no MR was created (Claude made no changes or skip-if-handled hit)"
+        echo "RESOLUTION_SET=false"
+        echo "=== RESULT ==="
+        echo "Bug #${BUG_ID} resolution NOT changed (no MR produced)"
+        exit 0
+      fi
+
+      PAYLOAD=$(jq -n --argjson bug "$BUG_ID" \
+        '{plugin_id:"mantis", tool:"update_bug", input:{bug_id:$bug, resolution:"fixed"}}')
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD" 2>&1)
+      RC=$?
+      if [ $RC -ne 0 ] || [ "$(echo "$RESP" | jq -r '.is_error // false' 2>/dev/null)" = "true" ]; then
+        echo "WARN: resolution update failed — $(echo "$RESP" | jq -r '.content // .error // "bridge unreachable"' 2>/dev/null | head -c 200)" >&2
+        echo "RESOLUTION_SET=false"
+        echo "=== RESULT ==="
+        echo "Bug #${BUG_ID} resolution NOT updated (best-effort; see WARN)"
+      else
+        echo "RESOLUTION_SET=true"
+        echo "=== RESULT ==="
+        echo "Bug #${BUG_ID} resolution → fixed"
+      fi
+    outputs:
+      - name: result
+        extract: stdout
+
   notify-mantis:
     worktree: false
     project: "{{input.project}}"
+    # depends_on flipped to mark-fixed so resolution is set BEFORE the
+    # bugnote claims "fix applied". Falls through unchanged in the
+    # no-MR path (mark-fixed will SKIP and notify-mantis still posts
+    # the "no fix applied" variant).
     # Post a bugnote on the Mantis bug summarising what Forge did —
     # either the MR URL + fix summary (when push-and-mr produced one)
     # or a "no fix applied" note. Best-effort: routes through the
@@ -753,7 +849,7 @@ nodes:
     # still get to notify-teams / cleanup.
     mode: shell
     depends_on:
-      - push-and-mr
+      - mark-fixed
     prompt: |
       set +e
       BUG_ID="{{input.bug_id}}"
