@@ -236,6 +236,7 @@ nodes:
         extract: stdout
   download-attachments:
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
+    worktree: false
     project: "{{input.project}}"
     prompt: >
       # Download all Attached Files from the Mantis bug into the worktree's
@@ -355,6 +356,7 @@ nodes:
     # worse, falls back to the main project dir) and edits land on the
     # wrong branch.
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
+    worktree: false
     prompt: >
       A Mantis bug needs to be fixed in this worktree (already checked out
 
@@ -487,6 +489,7 @@ nodes:
     # the bug-anchored branch (not `pipeline/<id>` or the user's main
     # checkout).
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
+    worktree: false
     prompt: >
       set -e
 
