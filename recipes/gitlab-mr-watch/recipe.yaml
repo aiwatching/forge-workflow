@@ -1,11 +1,16 @@
 name: gitlab-mr-watch
 display_name: "GitLab MR auto-fix (single MR)"
 description: |
-  Watch new comments on one specific GitLab MR.
-  Each new review note dispatches the `mr-review-fix` pipeline — Claude
-  reads the comment + the current MR diff, edits files in the matching
-  local project, and pushes a fixup commit.
-version: "0.4.0"
+  Watch one specific GitLab MR for new review comments. When the
+  comment count changes (someone added a note), the `mr-review-fix`
+  pipeline runs ONCE — it fetches all comments itself and triages
+  them holistically.
+
+  Per-Fire behaviour:
+    - No new comments  → no dispatch
+    - 1+ new comments  → exactly 1 pipeline run
+    (Unlike v0.4 which fired 1 pipeline per new note.)
+version: "0.5.0"
 author: "forge"
 tags: ["gitlab", "mr", "claude-code", "review"]
 
@@ -21,9 +26,8 @@ params:
     type: gitlab_mr_url
     required: true
     help: |
-      Paste the full URL of the MR. Forge parses out the
-      `namespace/repo` and the `iid` for you — no need to look them
-      up manually. Example:
+      Paste the full URL of the MR. Forge parses out
+      `namespace/repo` and `iid` for you. Example:
         https://dops-git106.fortinet-us.com/fortinac/FortiNAC/-/merge_requests/14656
 
   - name: schedule_minutes
@@ -35,10 +39,8 @@ params:
     label: "Triage policy (free-form, optional)"
     help: |
       Describe in plain text WHEN Claude should act vs skip. Leave
-      empty to use defaults (skip self/system/approvals/lgtm). Example:
-      "Only act if the reviewer points at a specific code defect or
-      missing test. Skip style nits, comments-only changes, and any
-      message from @ci-bot."
+      empty to use defaults (skip self/system/approvals/lgtm/nits;
+      act on substantive defects).
 
 job:
   name_template: "mr-watch-{{params.project}}-{{params.mr_url__iid}}"
@@ -47,14 +49,20 @@ job:
   schedule_interval_minutes: "{{params.schedule_minutes}}"
 
   source_connector: "gitlab"
-  source_tool: "list_mr_notes"
+  source_tool: "get_mr"
   source_input:
     project_id: "{{params.mr_url__path}}"
     mr_iid: "{{params.mr_url__iid}}"
-    per_page: 50
-    sort: "desc"
+    # First tick: register the current state (notes count) as "seen"
+    # without dispatching anything. Otherwise the very first poll
+    # would treat the existing notes count as "new" and trigger.
+    __mark_existing_as_seen: true
   items_path: ""
-  dedup_field: "id"
+  # `get_mr` returns ONE MR object; scheduler wraps as 1-item list.
+  # Dedup on user_notes_count — changes ONLY when someone adds/
+  # removes a comment. Label changes, assignee changes, status
+  # changes etc. don't bump this counter, so we don't false-fire.
+  dedup_field: "user_notes_count"
 
   dispatch_type: "pipeline"
   dispatch_params:
@@ -65,10 +73,5 @@ job:
       project: "{{params.project}}"
       gitlab_project_id: "{{params.mr_url__path}}"
       mr_iid: "{{params.mr_url__iid}}"
-      mr_title: ""
       mr_url: "{{params.mr_url}}"
-      reviewer: "{{item.author.username}}"
-      feedback: "{{item.body}}"
-      is_system: "{{item.system}}"
-      action: "review_submitted"
       triage_instructions: "{{params.triage_instructions}}"

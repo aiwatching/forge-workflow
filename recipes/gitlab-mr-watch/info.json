@@ -2,7 +2,7 @@
   "name": "gitlab-mr-watch",
   "display_name": "GitLab MR auto-fix (single MR)",
   "description": "Watch new comments on a specific GitLab MR. Each new review note dispatches the mr-review-fix pipeline — Claude reads the comment + the current MR diff, edits files in the matching local project, and pushes a fixup commit.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "forge",
   "tags": ["gitlab", "mr", "claude-code", "review"],
   "score": 0,

@@ -5,8 +5,8 @@
     {
       "name": "gitlab-mr-watch",
       "display_name": "GitLab MR auto-fix (single MR)",
-      "description": "Watch new comments on ONE GitLab MR. Just paste the MR URL \u2014 Forge parses out project/iid for you.",
-      "version": "0.4.0",
+      "description": "Per-MR watcher: 1 Fire = 0 or 1 pipeline run when comment count changes (not 1 per comment).",
+      "version": "0.5.0",
       "author": "forge",
       "tags": [
         "gitlab",
@@ -62,8 +62,8 @@
     {
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
-      "description": "5-step: ingest \u2192 AI triage (analysis-only) \u2192 AI fix (only on ACT) \u2192 reply on MR \u2192 cleanup+Teams.",
-      "version": "0.4.0",
+      "description": "5-step. Triggered per-MR (not per-comment). Each node emits clear === RESULT === block.",
+      "version": "0.5.0",
       "author": "forge",
       "tags": [
         "gitlab",
