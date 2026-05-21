@@ -37,10 +37,24 @@ params:
 
   - name: triage_instructions
     label: "Triage policy (free-form, optional)"
+    default: |
+      ACT on any concrete code change request from a human reviewer
+      (missing cleanup, refactor with clear rationale, bug, missing
+      test, security concern) AND on 'error' findings from code review
+      bots.
+
+      SKIP approvals / lgtm / style-nits / questions / bot warnings
+      about MR metadata.
+
+      NOOP (do nothing, post no reply) when the latest non-system
+      comment was authored by Forge itself (body starts with
+      '🤖 Forge:') OR by the same GitLab user this Job runs as.
+      Nothing has changed since the last Forge run.
     help: |
-      Describe in plain text WHEN Claude should act vs skip. Leave
-      empty to use defaults (skip self/system/approvals/lgtm/nits;
-      act on substantive defects).
+      Describe in plain text WHEN Claude should act vs skip vs close
+      vs noop. The default covers the common cases — overwrite if
+      you have project-specific rules (e.g. "only act when reviewer
+      is from team @backend").
 
 job:
   name_template: "mr-watch-{{params.project}}-{{params.mr_url__iid}}"
