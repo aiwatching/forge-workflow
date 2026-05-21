@@ -279,9 +279,26 @@ nodes:
       else
         REPLY_POSTED="false"
       fi
+
+      # When triage decided SKIP, also tag the MR so humans can filter
+      # for "Forge already looked at this — nothing to do" without
+      # reading the comment thread. Best-effort: if the label doesn't
+      # exist in the project, glab returns 4xx and we just log.
+      LABEL_RESULT="not changed"
+      if [ "$STATUS" = "skipped" ]; then
+        if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+             -X PUT -f "add_labels=forge:no-fix-needed" \
+             > /dev/null 2>&1; then
+          LABEL_RESULT="added forge:no-fix-needed"
+        else
+          LABEL_RESULT="failed to add label forge:no-fix-needed (label may not exist in project — create it once in GitLab → Labels)"
+        fi
+      fi
+
       echo "STATUS=${STATUS}"
       echo "REPLY_POSTED=${REPLY_POSTED}"
       echo "NOTE_ID=${NOTE_ID}"
+      echo "LABEL_RESULT=${LABEL_RESULT}"
       echo ""
       echo "=== RESULT ==="
       echo "MR !${MR_IID} reply: status=${STATUS}"
@@ -290,6 +307,7 @@ nodes:
       else
         echo "  POST failed — see glab error above"
       fi
+      echo "  Label: ${LABEL_RESULT}"
     outputs:
       - name: result
         extract: stdout
