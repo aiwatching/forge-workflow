@@ -115,14 +115,14 @@ nodes:
       1. Read NOTES_FILE + DIFF_FILE.
       2. Identify which comments are unaddressed (not already
          resolved by later code/replies).
-      3. Decide ONE of three actions:
+      3. Decide ONE of FOUR actions:
          - `act`   The comments name a concrete, narrow code fix
                    that should be applied. The MR itself is valid;
                    it just needs more changes.
-         - `skip`  No code change needed. Comments are
-                   approvals, "lgtm", questions, style nits, or
-                   already-resolved. The MR should continue its
-                   normal review/merge flow.
+         - `skip`  Substantive comments judged as not requiring
+                   code changes (genuine lgtm, approvals, questions,
+                   style nits). A reply WILL be posted explaining
+                   the decision. The MR continues normally.
          - `close` The MR as a whole should NOT be merged. Pick
                    this ONLY when the comments make it clear the
                    work is invalid: duplicate of another MR, wrong
@@ -130,6 +130,16 @@ nodes:
                    reviewer explicitly says abandon / supersede /
                    close. Be conservative — when in doubt, skip,
                    never close.
+         - `noop`  Nothing has changed since the last Forge run.
+                   Pick this when the LATEST non-system comment is
+                   from Forge itself (body starts with
+                   '🤖 Forge:') OR from the same GitLab user this
+                   Job runs as (Forge posts under that user's
+                   token). NO reply will be posted, no label
+                   changed, no MR action taken — completely
+                   silent. This breaks the self-reply loop where
+                   Forge's last note bumps the comment counter and
+                   re-triggers the pipeline.
       4. Write a `=== RESULT ===` block:
          - 1-3 sentence summary of the situation
          - List of unaddressed actionable comments (or "none")
@@ -138,6 +148,7 @@ nodes:
             ACTION: act
             ACTION: skip
             ACTION: close
+            ACTION: noop
 
       DO NOT edit files or run git in this step. The result block
       gets posted verbatim on the MR by the reply step, so write
@@ -172,6 +183,15 @@ nodes:
 
       ACTION: close
       ```
+
+      ```
+      === RESULT ===
+      The latest non-system comment is Forge's own auto-reply
+      from 2 minutes ago. No new external activity since the
+      previous run. Silent exit.
+
+      ACTION: noop
+      ```
     outputs:
       - name: reasoning
         extract: result
@@ -194,17 +214,19 @@ nodes:
       ```
 
       ## First — check the decision
-      Triage outputs one of three actions:
+      Triage outputs one of FOUR actions:
         - `ACTION: act`    → continue to the ACT path below
-        - `ACTION: skip`   → no code change; you do nothing
-        - `ACTION: close`  → no code change; the reply step closes the MR
+        - `ACTION: skip`   → no code change; reply step still posts
+        - `ACTION: close`  → no code change; reply step closes the MR
+        - `ACTION: noop`   → no code change; reply step posts nothing
 
       For anything other than `ACTION: act`:
         - Do NOT touch git, do NOT edit any file.
         - Reply with ONE line literally matching the triage:
             `FIX_RESULT: skipped`   (when triage said `skip`)
             `FIX_RESULT: close`     (when triage said `close`)
-            `FIX_RESULT: skipped`   (any other / unrecognized — safest)
+            `FIX_RESULT: noop`      (when triage said `noop`)
+            `FIX_RESULT: skipped`   (any unrecognized — safest)
         - End.
 
       If triage ended with `ACTION: act`, continue below.
@@ -282,7 +304,21 @@ nodes:
       {{nodes.fix.outputs.result}}
       FORGE_F_EOF
       )
-      if echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*pushed([[:space:]]|$)'; then
+      if echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*noop([[:space:]]|$)'; then
+        # Silent path: triage determined nothing has changed since
+        # the last Forge run. Don't post a reply (which would bump
+        # user_notes_count and re-trigger this pipeline next tick).
+        STATUS="noop"
+        echo "STATUS=noop"
+        echo "REPLY_POSTED=false"
+        echo "NOTE_ID="
+        echo "LABEL_RESULT=not changed"
+        echo "CLOSE_RESULT=not closed"
+        echo ""
+        echo "=== RESULT ==="
+        echo "MR !${MR_IID} noop — latest comment is from Forge or this Job's user. No reply posted, no labels changed."
+        exit 0
+      elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*pushed([[:space:]]|$)'; then
         STATUS="pushed"
         BODY="🤖 Forge: pushed a fixup commit addressing the review feedback.
 

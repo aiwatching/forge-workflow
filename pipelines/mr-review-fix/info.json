@@ -2,7 +2,7 @@
   "name": "mr-review-fix",
   "display_name": "MR Review Fix",
   "description": "GitLab MR review-feedback responder: a Claude triage step decides ACT vs SKIP per the user's plain-text triage_instructions, then (if ACT) checks out the source branch and pushes a fixup commit. Replaces the v0.1 regex/whitelist filter. Requires glab CLI authenticated.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "author": "forge",
   "tags": ["gitlab", "mr", "claude-code", "review"],
   "score": 0,
