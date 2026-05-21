@@ -48,7 +48,7 @@
       "name": "mantis-bug-fix-and-mr",
       "display_name": "Mantis Bug Fix + MR",
       "description": "Mantis bug → branch fix/mantis-{bug_id} → Claude fixes → push → glab MR → Teams notify.",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "author": "forge",
       "tags": ["mantis", "gitlab", "claude-code", "fix", "mr"]
     }

@@ -2,7 +2,7 @@
   "name": "mantis-bug-fix-and-mr",
   "display_name": "Mantis Bug Fix + MR",
   "description": "Fetch Mantis bug context → worktree → Claude proposes a fix → push branch → open GitLab MR via glab → notify assignee + reporter on Teams. Used by the mantis-bug-fix / mantis-bug-watch recipes.",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "author": "forge",
   "tags": ["mantis", "gitlab", "claude-code", "fix", "mr"],
   "score": 0,

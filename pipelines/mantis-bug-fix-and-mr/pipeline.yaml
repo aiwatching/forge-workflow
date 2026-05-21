@@ -4,6 +4,7 @@ description: Fetch Mantis bug context → worktree → fix code via headless Cla
   Teams.
 nodes:
   resolve:
+    worktree: false
     project: "{{input.project}}"
     prompt: >
       set -e
@@ -137,6 +138,7 @@ nodes:
       - name: wt
         extract: stdout
   fetch-bug-details:
+    worktree: false
     project: "{{input.project}}"
     prompt: |
       # Pull the FULL mantis bug — summary, description, additional_information,
@@ -233,6 +235,7 @@ nodes:
       - name: details
         extract: stdout
   download-attachments:
+    workdir: "{{nodes.worktree-setup.outputs.wt}}"
     project: "{{input.project}}"
     prompt: >
       # Download all Attached Files from the Mantis bug into the worktree's
@@ -736,6 +739,7 @@ nodes:
       - name: mr
         extract: stdout
   notify-teams:
+    worktree: false
     project: "{{input.project}}"
     prompt: >
       set -e
@@ -802,6 +806,7 @@ nodes:
       - name: result
         extract: stdout
   cleanup:
+    worktree: false
     project: "{{input.project}}"
     prompt: >
       # Best-effort cleanup so the project working tree doesn't pile up
