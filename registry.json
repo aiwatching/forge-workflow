@@ -5,34 +5,57 @@
     {
       "name": "gitlab-mr-watch",
       "display_name": "GitLab MR auto-fix (single MR)",
-      "description": "Watch new comments on ONE specific GitLab MR. Each new review note dispatches mr-review-fix.",
-      "version": "0.3.0",
+      "description": "Watch new comments on ONE GitLab MR. Just paste the MR URL \u2014 Forge parses out project/iid for you.",
+      "version": "0.4.0",
       "author": "forge",
-      "tags": ["gitlab", "mr", "claude-code", "review"]
+      "tags": [
+        "gitlab",
+        "mr",
+        "claude-code",
+        "review"
+      ]
     },
     {
       "name": "gitlab-my-mrs-watch",
-      "display_name": "GitLab — watch ALL my MRs for review feedback",
+      "display_name": "GitLab \u2014 watch ALL my MRs for review feedback",
       "description": "Auto-monitor every open MR you authored across all GitLab projects via Todos API. No per-MR setup.",
       "version": "0.3.0",
       "author": "forge",
-      "tags": ["gitlab", "mr", "claude-code", "review", "auto"]
+      "tags": [
+        "gitlab",
+        "mr",
+        "claude-code",
+        "review",
+        "auto"
+      ]
     },
     {
       "name": "mantis-bug-fix",
-      "display_name": "Mantis — fix one bug by id",
+      "display_name": "Mantis \u2014 fix one bug by id",
       "description": "Manual one-shot fix for a single Mantis bug; press Fire when ready.",
       "version": "0.1.0",
       "author": "forge",
-      "tags": ["mantis", "claude-code", "bug", "fix", "manual"]
+      "tags": [
+        "mantis",
+        "claude-code",
+        "bug",
+        "fix",
+        "manual"
+      ]
     },
     {
       "name": "mantis-bug-watch",
-      "display_name": "Mantis — auto-fix bugs by filter",
+      "display_name": "Mantis \u2014 auto-fix bugs by filter",
       "description": "Continuously poll Mantis with a filter (status / assignee / fix_schedule). New matches auto-dispatch.",
       "version": "0.1.0",
       "author": "forge",
-      "tags": ["mantis", "claude-code", "bug", "fix", "auto"]
+      "tags": [
+        "mantis",
+        "claude-code",
+        "bug",
+        "fix",
+        "auto"
+      ]
     }
   ],
   "pipelines": [
@@ -42,15 +65,26 @@
       "description": "GitLab MR review-feedback responder: Claude triage decides ACT vs SKIP, then (if ACT) checks out the source branch and pushes a fixup commit.",
       "version": "0.2.1",
       "author": "forge",
-      "tags": ["gitlab", "mr", "claude-code", "review"]
+      "tags": [
+        "gitlab",
+        "mr",
+        "claude-code",
+        "review"
+      ]
     },
     {
       "name": "mantis-bug-fix-and-mr",
       "display_name": "Mantis Bug Fix + MR",
-      "description": "Mantis bug → branch fix/mantis-{bug_id} → Claude fixes → push → glab MR → Teams notify.",
+      "description": "Mantis bug \u2192 branch fix/mantis-{bug_id} \u2192 Claude fixes \u2192 push \u2192 glab MR \u2192 Teams notify.",
       "version": "0.2.3",
       "author": "forge",
-      "tags": ["mantis", "gitlab", "claude-code", "fix", "mr"]
+      "tags": [
+        "mantis",
+        "gitlab",
+        "claude-code",
+        "fix",
+        "mr"
+      ]
     }
   ]
 }

@@ -1,11 +1,11 @@
 name: gitlab-mr-watch
 display_name: "GitLab MR auto-fix (single MR)"
 description: |
-  Watch new comments on a specific GitLab MR.
+  Watch new comments on one specific GitLab MR.
   Each new review note dispatches the `mr-review-fix` pipeline — Claude
   reads the comment + the current MR diff, edits files in the matching
   local project, and pushes a fixup commit.
-version: "0.3.0"
+version: "0.4.0"
 author: "forge"
 tags: ["gitlab", "mr", "claude-code", "review"]
 
@@ -16,21 +16,15 @@ params:
     required: true
     help: "The directory under your projectRoots; e.g. FortiNAC."
 
-  - name: project_id
-    label: "GitLab project (numeric id OR namespace path)"
+  - name: mr_url
+    label: "MR URL"
+    type: gitlab_mr_url
     required: true
     help: |
-      Either a numeric id (e.g. 580) OR the full path that appears in
-      the URL — for fortinet's https://dops-git106/fortinac/FortiNAC,
-      type `fortinac/FortiNAC` (Forge URL-encodes the slash for you).
-      Numeric ids come from gitlab.find_project in chat, or the project
-      Settings page.
-
-  - name: mr_iid
-    label: "MR iid"
-    type: number
-    required: true
-    help: "The number after !# in the MR URL, e.g. !14648 → 14648."
+      Paste the full URL of the MR. Forge parses out the
+      `namespace/repo` and the `iid` for you — no need to look them
+      up manually. Example:
+        https://dops-git106.fortinet-us.com/fortinac/FortiNAC/-/merge_requests/14656
 
   - name: schedule_minutes
     label: "Poll interval (minutes)"
@@ -47,7 +41,7 @@ params:
       message from @ci-bot."
 
 job:
-  name_template: "mr-watch-{{params.project}}-{{params.mr_iid}}"
+  name_template: "mr-watch-{{params.project}}-{{params.mr_url__iid}}"
   enabled: true
   schedule_kind: "period"
   schedule_interval_minutes: "{{params.schedule_minutes}}"
@@ -55,8 +49,8 @@ job:
   source_connector: "gitlab"
   source_tool: "list_mr_notes"
   source_input:
-    project_id: "{{params.project_id}}"
-    mr_iid: "{{params.mr_iid}}"
+    project_id: "{{params.mr_url__path}}"
+    mr_iid: "{{params.mr_url__iid}}"
     per_page: 50
     sort: "desc"
   items_path: ""
@@ -69,10 +63,10 @@ job:
     project_name: "{{params.project}}"
     input_template:
       project: "{{params.project}}"
-      gitlab_project_id: "{{params.project_id}}"
-      mr_iid: "{{params.mr_iid}}"
+      gitlab_project_id: "{{params.mr_url__path}}"
+      mr_iid: "{{params.mr_url__iid}}"
       mr_title: ""
-      mr_url: ""
+      mr_url: "{{params.mr_url}}"
       reviewer: "{{item.author.username}}"
       feedback: "{{item.body}}"
       is_system: "{{item.system}}"
