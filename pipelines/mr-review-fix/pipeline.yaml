@@ -1,0 +1,247 @@
+name: mr-review-fix
+description: "Take a GitLab MR review comment from Jobs → checkout source branch → let Claude fix → push update + reply."
+
+# Wired to either:
+#   A) gitlab.list_my_todos (production — every MR review on your radar)
+#        input_template: see top of forge-connectors/gitlab/manifest.yaml
+#          list_my_todos description for the exact mapping.
+#
+#   B) gitlab.list_mr_notes (single-MR drill: pin project_id + mr_iid in
+#      source_input, every new note dispatches; MR metadata is literal):
+#        {
+#          "project":           "FortiNAC",
+#          "gitlab_project_id": "580",
+#          "mr_iid":            "14648",
+#          "mr_title":          "...",
+#          "mr_url":            "https://.../merge_requests/14648",
+#          "action":            "review_submitted",
+#          "reviewer":          "{{item.author.username}}",
+#          "feedback":          "{{item.body}}",
+#          "is_system":         "{{item.system}}"   # skip-self uses this
+#        }
+#
+# Prereqs:
+#   - `glab` CLI installed + authenticated (`brew install glab && glab auth login`).
+#     If you'd rather use curl + Bearer token, replace the glab lines below.
+#   - The local project's git remote `origin` points at the same GitLab host.
+#   - vars.self_username matches your own GitLab handle so reviews
+#     submitted by yourself don't trigger a feedback loop.
+
+input:
+  project: "Local Forge project name (e.g. FortiNAC)"
+  mr_iid: "GitLab MR iid"
+  gitlab_project_id: "GitLab numeric project id"
+  feedback: "The reviewer's comment body"
+  reviewer: "Username of who left the feedback"
+  action: "Todo action_name (review_submitted | mentioned | review_requested | ...) — or 'manual' for one-off testing"
+  mr_title: "MR title for context"
+  mr_url: "URL to the MR"
+  # Only set when source = list_mr_notes (system-generated GitLab notes
+  # like 'added label X' shouldn't drive a code fix). Leave empty for
+  # other sources — falsy by default, skip-self treats it as a no-op.
+  is_system: ""
+
+vars:
+  # Your own GitLab handle — feedback from yourself is always skipped to
+  # avoid a "I post reply → my own reply triggers another fix" loop.
+  self_username: "zliu"
+
+  # Whitelist: if non-empty, ONLY these reviewers' feedback is acted on.
+  # Leave empty to allow everyone (subject to the deny list below).
+  # Example: "alice,bob,carol"
+  trusted_reviewers: ""
+
+  # Denylist: feedback from these usernames is always skipped — useful
+  # for bot accounts that comment a lot (CI bots, lint bots, etc.).
+  # Example: "dops-gitadmin,ci-bot,sonarqube"
+  ignored_reviewers: ""
+
+  # Body keyword skip — if the comment body matches any of these
+  # case-insensitive substrings, skip. Useful for approvals / acks.
+  # Pipe-separated regex alternation. Default ignores LGTM-style notes.
+  ignored_body_regex: "^lgtm$|^approved$|^👍|^thanks?$"
+
+nodes:
+  # ── 0. Guard rails ─────────────────────────────────────
+  # All filtering lives here — Job stays simple ("dispatch every new
+  # todo"), the workflow's first node decides whether to actually act.
+  # A skipped todo still produces a pipeline run with a clear reason,
+  # so audit + dedup behave correctly.
+  skip-self:
+    mode: shell
+    project: "{{input.project}}"
+    worktree: false
+    prompt: |
+      REVIEWER="{{input.reviewer}}"
+      ACTION="{{input.action}}"
+      BODY=$(cat <<'FORGE_FEEDBACK_EOF'
+      {{input.feedback}}
+      FORGE_FEEDBACK_EOF
+      )
+
+      # 0. system-generated notes → skip (label changes, "marked draft" etc.)
+      #    Only set when source = list_mr_notes; empty string for other sources
+      IS_SYSTEM="{{input.is_system}}"
+      if [ "$IS_SYSTEM" = "true" ]; then
+        echo "SKIP: system-generated note (no human feedback)" && exit 1
+      fi
+      # No body → nothing to act on (e.g. attachment-only / emoji-only)
+      if [ -z "$BODY" ] || [ "$BODY" = "null" ]; then
+        echo "SKIP: empty body" && exit 1
+      fi
+
+      # 1. self-feedback → skip (loop guard)
+      if [ "$REVIEWER" = "{{vars.self_username}}" ]; then
+        echo "SKIP: reviewer is myself ($REVIEWER) — avoiding loop" && exit 1
+      fi
+
+      # 2. denylist (bots etc.)
+      IGNORED="{{vars.ignored_reviewers}}"
+      if [ -n "$IGNORED" ]; then
+        case ",$IGNORED," in *,"$REVIEWER",*)
+          echo "SKIP: reviewer $REVIEWER is in ignored_reviewers" && exit 1 ;;
+        esac
+      fi
+
+      # 3. whitelist — when set, gate to listed reviewers only
+      TRUSTED="{{vars.trusted_reviewers}}"
+      if [ -n "$TRUSTED" ]; then
+        case ",$TRUSTED," in *,"$REVIEWER",*) : ;;
+          *) echo "SKIP: reviewer $REVIEWER not in trusted_reviewers ($TRUSTED)" && exit 1 ;;
+        esac
+      fi
+
+      # 4. actionable actions only
+      case "$ACTION" in
+        review_submitted|mentioned|directly_addressed|unmergeable) : ;;
+        *) echo "SKIP: action=$ACTION is not feedback-style" && exit 1 ;;
+      esac
+
+      # 5. body keyword skip (approvals / acks)
+      IGNORE_RE='{{vars.ignored_body_regex}}'
+      if [ -n "$IGNORE_RE" ] && echo "$BODY" | grep -Eiq "$IGNORE_RE"; then
+        echo "SKIP: comment body matches ignored_body_regex ('$IGNORE_RE')" && exit 1
+      fi
+
+      echo "PROCEED: action=$ACTION reviewer=$REVIEWER"
+    outputs:
+      - name: status
+        extract: stdout
+
+  # ── 1. Find the MR's source branch via GitLab API ──────
+  resolve-branch:
+    mode: shell
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [skip-self]
+    prompt: |
+      SRC=$(glab api "projects/{{input.gitlab_project_id}}/merge_requests/{{input.mr_iid}}" --jq '.source_branch') && \
+      if [ -z "$SRC" ]; then echo "ERROR: failed to resolve source_branch" && exit 1; fi && \
+      echo "$SRC"
+    outputs:
+      - name: source_branch
+        extract: stdout
+
+  # ── 2. Checkout the MR's source branch in an isolated worktree ──
+  checkout:
+    mode: shell
+    project: "{{input.project}}"
+    branch: "mr-{{input.mr_iid}}"
+    depends_on: [resolve-branch]
+    prompt: |
+      git fetch origin && \
+      git checkout "{{nodes.resolve-branch.outputs.source_branch}}" && \
+      git pull --ff-only origin "{{nodes.resolve-branch.outputs.source_branch}}" && \
+      echo "HEAD: $(git rev-parse --short HEAD) on $(git branch --show-current)"
+    outputs:
+      - name: head
+        extract: stdout
+
+  # ── 3. Dump the current MR diff (so Claude sees the same thing reviewer did) ──
+  fetch-diff:
+    mode: shell
+    project: "{{input.project}}"
+    branch: "mr-{{input.mr_iid}}"
+    depends_on: [checkout]
+    prompt: |
+      glab api "projects/{{input.gitlab_project_id}}/merge_requests/{{input.mr_iid}}/changes" \
+        --jq '.changes[] | "=== \(.new_path) ===\n\(.diff)"' > "/tmp/mr-{{input.mr_iid}}-diff.txt" && \
+      wc -l "/tmp/mr-{{input.mr_iid}}-diff.txt"
+    outputs:
+      - name: meta
+        extract: stdout
+
+  # ── 4. Have Claude apply the fix ───────────────────────
+  apply-fix:
+    project: "{{input.project}}"
+    branch: "mr-{{input.mr_iid}}"
+    depends_on: [fetch-diff]
+    prompt: |
+      You are addressing a review comment on GitLab MR !{{input.mr_iid}} — "{{input.mr_title}}".
+
+      ## Reviewer feedback
+      From @{{input.reviewer}} (action: {{input.action}}):
+
+      ```
+      {{input.feedback}}
+      ```
+
+      ## Current MR diff
+      The full diff of the MR is at `/tmp/mr-{{input.mr_iid}}-diff.txt`.
+      Read it first to understand the current state.
+
+      ## Your task
+      1. Read the diff at `/tmp/mr-{{input.mr_iid}}-diff.txt`.
+      2. Decide whether the feedback requires code changes:
+         - Actionable: bug pointed out, suggested refactor, missing test, naming nit, etc.
+         - Non-actionable: question, approval, "thanks", out-of-scope discussion.
+      3. If actionable → edit the relevant files. Stay narrow — change ONLY what the
+         feedback is about. Do NOT touch unrelated files. Do NOT amend the previous
+         commit — make a fresh commit so the diff history shows the response.
+      4. If non-actionable → make no edits.
+
+      Finish your reply with one of these lines (literally, on its own line):
+        ACTION: changes
+        ACTION: none
+
+      The next step branches on this marker.
+
+  # ── 5. Commit + push (or skip if no edits) ─────────────
+  commit-push:
+    mode: shell
+    project: "{{input.project}}"
+    branch: "mr-{{input.mr_iid}}"
+    depends_on: [apply-fix]
+    prompt: |
+      if [ -z "$(git status --porcelain)" ]; then
+        echo "STATUS=no-changes" && exit 0
+      fi && \
+      git add -A && \
+      git commit -m "fix: address review feedback from @{{input.reviewer}} on !{{input.mr_iid}}" \
+                 -m "{{input.feedback}}" && \
+      git push origin "{{nodes.resolve-branch.outputs.source_branch}}" && \
+      echo "STATUS=pushed" && \
+      git log -1 --oneline
+    outputs:
+      - name: status
+        extract: stdout
+
+  # ── 6. Post a reply note so reviewer sees the response ──
+  reply:
+    mode: shell
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [commit-push]
+    prompt: |
+      STATUS_OUT="{{nodes.commit-push.outputs.status}}"
+      if echo "$STATUS_OUT" | grep -q "STATUS=no-changes"; then
+        echo "No code changes — not posting reply" && exit 0
+      fi
+      BODY="🤖 Forge: 已根据 @{{input.reviewer}} 的反馈推送了一个 fixup commit,请 review。"
+      glab api "projects/{{input.gitlab_project_id}}/merge_requests/{{input.mr_iid}}/notes" \
+        -X POST -f body="$BODY" \
+        --jq '.id' && \
+      echo "Reply posted"
+    outputs:
+      - name: posted
+        extract: stdout

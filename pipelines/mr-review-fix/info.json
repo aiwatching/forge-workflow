@@ -1,0 +1,10 @@
+{
+  "name": "mr-review-fix",
+  "display_name": "MR Review Fix",
+  "description": "GitLab MR review-feedback responder: checkout source branch in a worktree, ask Claude to apply the fix per reviewer comment, commit + push + reply via glab. Filters out self/bot comments and approval-style noise. Requires glab CLI authenticated.",
+  "version": "0.1.0",
+  "author": "forge",
+  "tags": ["gitlab", "mr", "claude-code", "review"],
+  "score": 0,
+  "rating": 0
+}

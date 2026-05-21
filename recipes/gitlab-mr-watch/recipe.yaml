@@ -1,0 +1,66 @@
+name: gitlab-mr-watch
+display_name: "GitLab MR auto-fix"
+description: |
+  Watch new comments on a specific GitLab MR.
+  Each new review note dispatches the `mr-review-fix` pipeline — Claude
+  reads the comment + the current MR diff, edits files in the matching
+  local project, and pushes a fixup commit.
+version: "0.1.0"
+author: "forge"
+tags: ["gitlab", "mr", "claude-code", "review"]
+
+params:
+  - name: project
+    label: "Local project name"
+    type: project_picker
+    required: true
+    help: "The directory under your projectRoots; e.g. FortiNAC."
+
+  - name: project_id
+    label: "GitLab project_id (numeric)"
+    type: number
+    required: true
+    help: "Open the MR in GitLab → URL or use gitlab.find_project."
+
+  - name: mr_iid
+    label: "MR iid"
+    type: number
+    required: true
+    help: "The number after !# in the MR URL, e.g. !14648 → 14648."
+
+  - name: schedule_minutes
+    label: "Poll interval (minutes)"
+    type: number
+    default: 5
+
+job:
+  name_template: "mr-watch-{{params.project}}-{{params.mr_iid}}"
+  enabled: true
+  schedule_kind: "period"
+  schedule_interval_minutes: "{{params.schedule_minutes}}"
+
+  source_connector: "gitlab"
+  source_tool: "list_mr_notes"
+  source_input:
+    project_id: "{{params.project_id}}"
+    mr_iid: "{{params.mr_iid}}"
+    per_page: 50
+    sort: "desc"
+  items_path: ""
+  dedup_field: "id"
+
+  dispatch_type: "pipeline"
+  dispatch_params:
+    workflow_name: "mr-review-fix"
+    project_path: "{{env.HOME}}/IdeaProjects/{{params.project}}"
+    project_name: "{{params.project}}"
+    input_template:
+      project: "{{params.project}}"
+      gitlab_project_id: "{{params.project_id}}"
+      mr_iid: "{{params.mr_iid}}"
+      mr_title: ""
+      mr_url: ""
+      reviewer: "{{item.author.username}}"
+      feedback: "{{item.body}}"
+      is_system: "{{item.system}}"
+      action: "review_submitted"
