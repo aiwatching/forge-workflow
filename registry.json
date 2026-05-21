@@ -62,8 +62,8 @@
     {
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
-      "description": "5-step. Triggered per-MR (not per-comment). Each node emits clear === RESULT === block.",
-      "version": "0.5.3",
+      "description": "5-step. Triage outputs act|skip|close; close path adds forge:no-merge label + closes the MR via glab.",
+      "version": "0.6.0",
       "author": "forge",
       "tags": [
         "gitlab",

@@ -115,30 +115,62 @@ nodes:
       1. Read NOTES_FILE + DIFF_FILE.
       2. Identify which comments are unaddressed (not already
          resolved by later code/replies).
-      3. Decide ACT vs SKIP per the triage policy.
+      3. Decide ONE of three actions:
+         - `act`   The comments name a concrete, narrow code fix
+                   that should be applied. The MR itself is valid;
+                   it just needs more changes.
+         - `skip`  No code change needed. Comments are
+                   approvals, "lgtm", questions, style nits, or
+                   already-resolved. The MR should continue its
+                   normal review/merge flow.
+         - `close` The MR as a whole should NOT be merged. Pick
+                   this ONLY when the comments make it clear the
+                   work is invalid: duplicate of another MR, wrong
+                   approach, problem already fixed elsewhere,
+                   reviewer explicitly says abandon / supersede /
+                   close. Be conservative — when in doubt, skip,
+                   never close.
       4. Write a `=== RESULT ===` block:
          - 1-3 sentence summary of the situation
          - List of unaddressed actionable comments (or "none")
-         - Your decision rationale
+         - Your decision rationale (especially important for close)
       5. End with EXACTLY one line on its own:
             ACTION: act
             ACTION: skip
+            ACTION: close
 
       DO NOT edit files or run git in this step. The result block
       gets posted verbatim on the MR by the reply step, so write
       it in user-facing language.
 
-      Example shape:
+      Example shapes:
       ```
       === RESULT ===
       Reviewer @alice asked us to add input validation to
-      `parseUrl()`. The current diff has no validation. This is
-      a concrete, narrow ask — actionable.
+      `parseUrl()`. The current diff has no validation. Concrete,
+      narrow ask — actionable.
 
       Unaddressed comments:
-        - @alice (2026-05-21): add validation for malformed URLs
+        - @alice: add validation for malformed URLs
 
       ACTION: act
+      ```
+
+      ```
+      === RESULT ===
+      @bob's comment is "lgtm 👍". No further changes requested.
+      The diff is clean and ready for merge.
+
+      ACTION: skip
+      ```
+
+      ```
+      === RESULT ===
+      @carol pointed out this MR duplicates !14600, which is
+      already merged into 7.6. Continuing with this MR would
+      re-introduce the same change. Recommend closing.
+
+      ACTION: close
       ```
     outputs:
       - name: reasoning
@@ -162,10 +194,17 @@ nodes:
       ```
 
       ## First — check the decision
-      If the triage reply ends with `ACTION: skip` (or otherwise
-      doesn't end with `ACTION: act`), your job is done:
+      Triage outputs one of three actions:
+        - `ACTION: act`    → continue to the ACT path below
+        - `ACTION: skip`   → no code change; you do nothing
+        - `ACTION: close`  → no code change; the reply step closes the MR
+
+      For anything other than `ACTION: act`:
         - Do NOT touch git, do NOT edit any file.
-        - Reply with ONE line literally: `FIX_RESULT: skipped`
+        - Reply with ONE line literally matching the triage:
+            `FIX_RESULT: skipped`   (when triage said `skip`)
+            `FIX_RESULT: close`     (when triage said `close`)
+            `FIX_RESULT: skipped`   (any other / unrecognized — safest)
         - End.
 
       If triage ended with `ACTION: act`, continue below.
@@ -252,6 +291,11 @@ nodes:
 
       **Fix summary:**
       ${FIX}"
+      elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*close([[:space:]]|$)'; then
+        STATUS="close"
+        BODY="🤖 Forge: this MR is being closed — the review concluded the work shouldn't be merged.
+
+      ${TRIAGE}"
       elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*skipped([[:space:]]|$)'; then
         STATUS="skipped"
         BODY="🤖 Forge: reviewed the latest comments — **no code change needed**.
@@ -280,25 +324,57 @@ nodes:
         REPLY_POSTED="false"
       fi
 
-      # When triage decided SKIP, also tag the MR so humans can filter
-      # for "Forge already looked at this — nothing to do" without
-      # reading the comment thread. Best-effort: if the label doesn't
-      # exist in the project, glab returns 4xx and we just log.
+      # Per-STATUS side-effects on the MR itself:
+      #   skipped → label forge:no-fix-needed
+      #   close   → label forge:no-merge + close the MR via PUT state_event=close
+      #   pushed  → label forge:fix-applied (optional — humans see the
+      #             new commit in the diff anyway)
+      # All best-effort: missing labels return 4xx, we log + continue.
       LABEL_RESULT="not changed"
-      if [ "$STATUS" = "skipped" ]; then
-        if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
-             -X PUT -f "add_labels=forge:no-fix-needed" \
-             > /dev/null 2>&1; then
-          LABEL_RESULT="added forge:no-fix-needed"
-        else
-          LABEL_RESULT="failed to add label forge:no-fix-needed (label may not exist in project — create it once in GitLab → Labels)"
-        fi
-      fi
+      CLOSE_RESULT="not closed"
+      case "$STATUS" in
+        skipped)
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "add_labels=forge:no-fix-needed" \
+               > /dev/null 2>&1; then
+            LABEL_RESULT="added forge:no-fix-needed"
+          else
+            LABEL_RESULT="failed to add forge:no-fix-needed (label may not exist in project)"
+          fi
+          ;;
+        close)
+          # Add the label AND close the MR. Both best-effort, both logged.
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "add_labels=forge:no-merge" \
+               > /dev/null 2>&1; then
+            LABEL_RESULT="added forge:no-merge"
+          else
+            LABEL_RESULT="failed to add forge:no-merge (label may not exist in project)"
+          fi
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "state_event=close" \
+               > /dev/null 2>&1; then
+            CLOSE_RESULT="MR closed"
+          else
+            CLOSE_RESULT="failed to close MR — check glab permissions"
+          fi
+          ;;
+        pushed)
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "add_labels=forge:fix-applied" \
+               > /dev/null 2>&1; then
+            LABEL_RESULT="added forge:fix-applied"
+          else
+            LABEL_RESULT="failed to add forge:fix-applied (label may not exist in project)"
+          fi
+          ;;
+      esac
 
       echo "STATUS=${STATUS}"
       echo "REPLY_POSTED=${REPLY_POSTED}"
       echo "NOTE_ID=${NOTE_ID}"
       echo "LABEL_RESULT=${LABEL_RESULT}"
+      echo "CLOSE_RESULT=${CLOSE_RESULT}"
       echo ""
       echo "=== RESULT ==="
       echo "MR !${MR_IID} reply: status=${STATUS}"
@@ -308,6 +384,9 @@ nodes:
         echo "  POST failed — see glab error above"
       fi
       echo "  Label: ${LABEL_RESULT}"
+      if [ "$STATUS" = "close" ]; then
+        echo "  Close: ${CLOSE_RESULT}"
+      fi
     outputs:
       - name: result
         extract: stdout
