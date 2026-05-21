@@ -63,7 +63,7 @@
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
       "description": "5-step. Triggered per-MR (not per-comment). Each node emits clear === RESULT === block.",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "author": "forge",
       "tags": [
         "gitlab",

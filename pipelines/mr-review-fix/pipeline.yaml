@@ -245,7 +245,7 @@ nodes:
       )
       if echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*pushed([[:space:]]|$)'; then
         STATUS="pushed"
-        BODY="🤖 Forge: 已根据 review feedback 推送 fixup commit。
+        BODY="🤖 Forge: pushed a fixup commit addressing the review feedback.
 
       **Triage:**
       ${TRIAGE}
@@ -254,12 +254,12 @@ nodes:
       ${FIX}"
       elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*skipped([[:space:]]|$)'; then
         STATUS="skipped"
-        BODY="🤖 Forge: 已 review 最新评论,**判断无需修改**。
+        BODY="🤖 Forge: reviewed the latest comments — **no code change needed**.
 
       ${TRIAGE}"
       elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*failed([[:space:]]|$)'; then
         STATUS="failed"
-        BODY="⚠️ Forge: triage 判断需要修复,但应用失败。需人工处理。
+        BODY="⚠️ Forge: triage decided to fix but applying the change failed. Human attention required.
 
       **Triage:**
       ${TRIAGE}
@@ -268,7 +268,7 @@ nodes:
       ${FIX}"
       else
         STATUS="unknown"
-        BODY="⚠️ Forge: fix 步骤未输出 FIX_RESULT 标记。需人工 review。
+        BODY="⚠️ Forge: fix step did not emit a FIX_RESULT marker. Human review required.
 
       ${FIX}"
       fi
