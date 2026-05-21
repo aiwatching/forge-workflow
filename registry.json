@@ -46,8 +46,8 @@
     {
       "name": "mantis-bug-watch",
       "display_name": "Mantis \u2014 auto-fix bugs by filter",
-      "description": "Continuously poll Mantis with a filter (status / assignee / fix_schedule). New matches auto-dispatch.",
-      "version": "0.1.0",
+      "description": "Watch Mantis filter \u2014 accept project NAME (no need to look up numeric id).",
+      "version": "0.2.0",
       "author": "forge",
       "tags": [
         "mantis",

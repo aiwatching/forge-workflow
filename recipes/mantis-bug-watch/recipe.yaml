@@ -56,10 +56,13 @@ params:
     label: "Fix Schedule filter (e.g. 7.6.7) — optional"
     help: "Mantis custom field. Substring-matches the column."
 
-  - name: mantis_project_id
-    label: "Mantis project_id — optional (numeric)"
-    type: number
-    help: "Use list_projects to look up the id. Leave empty for all projects."
+  - name: mantis_project
+    label: "Mantis project name — optional"
+    help: |
+      Project name as shown in Mantis (e.g. 'FortiNAC'). The mantis
+      connector's search_bugs tool resolves the name to a numeric id
+      internally — you don't need to look it up. Leave empty to match
+      bugs across all projects.
 
   - name: schedule_minutes
     label: "Poll interval (minutes)"
@@ -79,7 +82,7 @@ job:
     status: "{{params.status}}"
     assignee: "{{params.assignee}}"
     fix_schedule: "{{params.fix_schedule}}"
-    project_id: "{{params.mantis_project_id}}"
+    project_name: "{{params.mantis_project}}"
   items_path: "bugs"
   dedup_field: "id"
 

@@ -2,7 +2,7 @@
   "name": "mantis-bug-watch",
   "display_name": "Mantis — auto-fix bugs by filter",
   "description": "Continuously poll Mantis with a filter (status / assignee / fix_schedule / project). New matches dispatch mantis-bug-fix-and-mr. Dedup by bug id.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "forge",
   "tags": ["mantis", "claude-code", "bug", "fix", "auto"],
   "score": 0,
