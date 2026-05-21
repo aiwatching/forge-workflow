@@ -14,7 +14,7 @@ description: |
   Dependencies: glab CLI authenticated; mr-review-fix pipeline
   installed locally (auto-installed when this recipe runs the first
   time, or via Marketplace).
-version: "0.2.0"
+version: "0.3.0"
 author: "forge"
 tags: ["gitlab", "mr", "claude-code", "review", "auto"]
 
@@ -29,12 +29,15 @@ params:
       project + set gitlab_project_id_filter to scope each.
 
   - name: gitlab_project_id_filter
-    label: "GitLab project_id (optional — leave empty for ALL projects)"
+    label: "GitLab project filter (numeric id, optional)"
     type: number
     help: |
-      Limit the Todo poll to a single GitLab project. Recommended if
-      you only want this recipe instance to act on MRs in one repo —
-      avoids cross-project misfires.
+      Limit the Todo poll to a single GitLab project. **This must be
+      numeric** — GitLab's Todos API takes a project_id as a query
+      param, not a path. Look up the numeric id in chat with
+      `gitlab.find_project { query: "FortiNAC" }`, or open the project
+      → Settings → General → Project ID. Leave empty to monitor MRs
+      across ALL projects the token can see.
 
   - name: action
     label: "Todo action to watch"
