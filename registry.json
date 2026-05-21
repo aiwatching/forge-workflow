@@ -46,8 +46,8 @@
     {
       "name": "mantis-bug-watch",
       "display_name": "Mantis \u2014 auto-fix bugs by filter",
-      "description": "Watch Mantis filter \u2014 resolution=open default, skip bugs Forge already fixed.",
-      "version": "0.3.0",
+      "description": "Watch Mantis filter with source + keyword + resolution=open filters.",
+      "version": "0.4.0",
       "author": "forge",
       "tags": [
         "mantis",
