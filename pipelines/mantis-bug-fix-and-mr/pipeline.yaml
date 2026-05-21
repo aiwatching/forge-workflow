@@ -338,6 +338,9 @@ nodes:
         extract: stdout
   fix-code:
     project: "{{input.project}}"
+    # Pin the orchestrator's auto-worktree to the bug-specific branch so
+    # commits land on `fix/mantis-{bug_id}`, not the default `pipeline/<id>`.
+    branch: "fix/mantis-{{input.bug_id}}"
     prompt: >
       A Mantis bug needs to be fixed in this worktree (already checked out
 
@@ -466,6 +469,9 @@ nodes:
         extract: git_diff
   push-and-mr:
     project: "{{input.project}}"
+    # Same branch as fix-code so push targets the bug-specific branch
+    # instead of the orchestrator's default `pipeline/<id>` worktree.
+    branch: "fix/mantis-{{input.bug_id}}"
     prompt: >
       set -e
 
