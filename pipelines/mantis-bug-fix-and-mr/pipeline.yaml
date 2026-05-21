@@ -46,6 +46,15 @@ nodes:
         extract: stdout
   worktree-setup:
     project: "{{input.project}}"
+    # MUST stay in project root — the script below explicitly creates a
+    # NEW worktree at `.forge/worktrees/mantis-${BUG_ID}`. If the
+    # orchestrator opens its own `pipeline/<id>` worktree first, the
+    # subsequent `git worktree add fix/mantis-X` collides with the
+    # orchestrator's auto-attempt downstream (same branch, different
+    # path), the auto-add fails, orchestrator silently falls back to
+    # the main project dir, and Claude commits onto whatever branch
+    # the user happens to have checked out.
+    worktree: false
     prompt: >
       set -e
 
@@ -338,9 +347,11 @@ nodes:
         extract: stdout
   fix-code:
     project: "{{input.project}}"
-    # Pin the orchestrator's auto-worktree to the bug-specific branch so
-    # commits land on `fix/mantis-{bug_id}`, not the default `pipeline/<id>`.
-    branch: "fix/mantis-{{input.bug_id}}"
+    # cd into the worktree-setup-managed worktree. WITHOUT this Claude
+    # runs in the orchestrator's default `pipeline/<id>` worktree (or
+    # worse, falls back to the main project dir) and edits land on the
+    # wrong branch.
+    workdir: "{{nodes.worktree-setup.outputs.wt}}"
     prompt: >
       A Mantis bug needs to be fixed in this worktree (already checked out
 
@@ -469,9 +480,10 @@ nodes:
         extract: git_diff
   push-and-mr:
     project: "{{input.project}}"
-    # Same branch as fix-code so push targets the bug-specific branch
-    # instead of the orchestrator's default `pipeline/<id>` worktree.
-    branch: "fix/mantis-{{input.bug_id}}"
+    # Stay in the same worktree fix-code used so `git push HEAD` pushes
+    # the bug-anchored branch (not `pipeline/<id>` or the user's main
+    # checkout).
+    workdir: "{{nodes.worktree-setup.outputs.wt}}"
     prompt: >
       set -e
 
