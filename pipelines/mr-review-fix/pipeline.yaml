@@ -78,34 +78,35 @@ nodes:
     outputs:
       - name: reasoning
         extract: result
-      - name: decision
-        extract: result
-        pattern: "DECISION:\\s*(ACT|SKIP)"
 
-  # ── 2. Gate — short-circuit the pipeline if triage said SKIP ──
+  # ── 2. Gate — grep the triage reasoning for DECISION: ACT/SKIP ──
+  # The orchestrator's output schema doesn't expose a regex `pattern`
+  # extractor yet, so we grep the full reasoning text instead of
+  # plucking a single token. Claude is instructed to end with one of:
+  #   DECISION: ACT
+  #   DECISION: SKIP
   gate:
     mode: shell
     project: "{{input.project}}"
     worktree: false
     depends_on: [triage]
     prompt: |
-      DECISION='{{nodes.triage.outputs.decision}}'
-      case "$DECISION" in
-        ACT)
-          echo "PROCEED — Claude triage said ACT"
-          ;;
-        SKIP)
-          echo "SKIP by triage:"
-          echo "{{nodes.triage.outputs.reasoning}}"
-          exit 1
-          ;;
-        *)
-          echo "Triage produced no DECISION line — defaulting to SKIP for safety."
-          echo "Reasoning was:"
-          echo "{{nodes.triage.outputs.reasoning}}"
-          exit 1
-          ;;
-      esac
+      REASONING=$(cat <<'FORGE_REASONING_EOF'
+      {{nodes.triage.outputs.reasoning}}
+      FORGE_REASONING_EOF
+      )
+      if echo "$REASONING" | grep -Eq '(^|[[:space:]])DECISION:[[:space:]]*ACT([[:space:]]|$)'; then
+        echo "PROCEED — Claude triage said ACT"
+      elif echo "$REASONING" | grep -Eq '(^|[[:space:]])DECISION:[[:space:]]*SKIP([[:space:]]|$)'; then
+        echo "SKIP by triage. Reasoning:"
+        echo "$REASONING"
+        exit 1
+      else
+        echo "Triage produced no DECISION: ACT|SKIP line — defaulting to SKIP for safety."
+        echo "Reasoning was:"
+        echo "$REASONING"
+        exit 1
+      fi
     outputs:
       - name: status
         extract: stdout

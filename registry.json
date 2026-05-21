@@ -39,8 +39,8 @@
     {
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
-      "description": "GitLab MR review-feedback responder: checkout, ask Claude to apply the fix, push + reply. Requires glab CLI.",
-      "version": "0.2.0",
+      "description": "GitLab MR review-feedback responder: Claude triage decides ACT vs SKIP, then (if ACT) checks out the source branch and pushes a fixup commit.",
+      "version": "0.2.1",
       "author": "forge",
       "tags": ["gitlab", "mr", "claude-code", "review"]
     },
