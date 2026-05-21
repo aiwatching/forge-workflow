@@ -1,5 +1,5 @@
 name: gitlab-mr-watch
-display_name: "GitLab MR auto-fix"
+display_name: "GitLab MR auto-fix (single MR)"
 description: |
   Watch new comments on a specific GitLab MR.
   Each new review note dispatches the `mr-review-fix` pipeline — Claude

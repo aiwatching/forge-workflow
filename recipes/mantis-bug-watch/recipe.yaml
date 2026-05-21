@@ -1,0 +1,118 @@
+name: mantis-bug-watch
+display_name: "Mantis — auto-fix bugs by filter"
+description: |
+  Continuously poll Mantis for bugs matching a filter (status, fix
+  schedule, project, assignee) and run mantis-bug-fix-and-mr on each
+  NEW match. Dedup is by Mantis bug id — once a bug has been
+  dispatched once, it won't be re-processed unless you reset dedup.
+
+  Typical setup: status=assigned + assignee=me + fix_schedule="7.6.7"
+  → only bugs assigned to you scheduled for the 7.6.7 release get
+  auto-fixed.
+
+  Tip: the first tick after creation can dispatch a lot of historical
+  bugs. To skip backfill, edit the Job after creation and set the
+  hidden flag `__mark_existing_as_seen: true` for one tick.
+version: "0.1.0"
+author: "forge"
+tags: ["mantis", "claude-code", "bug", "fix", "auto"]
+
+params:
+  - name: project
+    label: "Local project name (where Claude will checkout + edit code)"
+    type: project_picker
+    required: true
+
+  - name: base_branch
+    label: "Base branch to fork from"
+    required: true
+    default: "main"
+    help: "e.g. main, 7.6, release/7.6 — all fixes branch off this."
+
+  - name: status
+    label: "Mantis status filter"
+    type: select
+    default: "assigned"
+    options:
+      - new
+      - feedback
+      - acknowledged
+      - confirmed
+      - assigned
+      - resolved
+      - "assigned,confirmed"
+      - any
+    help: |
+      Only bugs in this status will be picked up. 'assigned' covers the
+      common "work in progress" case; 'new' covers triage queues.
+
+  - name: assignee
+    label: "Assignee (Mantis username, or leave empty for any)"
+    help: |
+      Restrict to bugs assigned to a specific user. Common values:
+      your Mantis handle, or empty to take everything matching status.
+
+  - name: fix_schedule
+    label: "Fix Schedule filter (e.g. 7.6.7) — optional"
+    help: "Mantis custom field. Substring-matches the column."
+
+  - name: mantis_project_id
+    label: "Mantis project_id — optional (numeric)"
+    type: number
+    help: "Use list_projects to look up the id. Leave empty for all projects."
+
+  - name: schedule_minutes
+    label: "Poll interval (minutes)"
+    type: number
+    default: 30
+    help: "Mantis filter pages aren't cheap to scrape — 30 min is a good default."
+
+job:
+  name_template: "watch-mantis-{{params.status}}-{{params.project}}"
+  enabled: true
+  schedule_kind: "period"
+  schedule_interval_minutes: "{{params.schedule_minutes}}"
+
+  source_connector: "mantis"
+  source_tool: "search_bugs"
+  source_input:
+    status: "{{params.status}}"
+    assignee: "{{params.assignee}}"
+    fix_schedule: "{{params.fix_schedule}}"
+    project_id: "{{params.mantis_project_id}}"
+  items_path: "bugs"
+  dedup_field: "id"
+
+  dispatch_type: "pipeline"
+  dispatch_params:
+    workflow_name: "mantis-bug-fix-and-mr"
+    project_path: "{{env.HOME}}/IdeaProjects/{{params.project}}"
+    project_name: "{{params.project}}"
+    input_template:
+      project: "{{params.project}}"
+      bug_id: "{{item.id}}"
+      base_branch: "{{params.base_branch}}"
+      summary: "{{item.summary}}"
+      description: "{{item.description}}"
+      priority: "{{item.priority}}"
+      category: "{{item.category}}"
+      reporter: "{{item.reporter}}"
+      assignee: "{{item.assignee}}"
+      extra_context: ""
+      mr_title_template: "Fix Mantis #{{item.id}}: {{item.summary}}"
+      mr_body_template: |
+        ## Purpose
+        Fix Mantis bug #{bug_id} — {summary}
+
+        ## Mantis
+        MANTIS-{bug_id}
+
+        ## Description
+        {description}
+
+        ## Technical Description
+        {claude_summary}
+
+        ## Testing Done
+        TBD — please verify in CI + smoke test.
+      teams_message_template: ""

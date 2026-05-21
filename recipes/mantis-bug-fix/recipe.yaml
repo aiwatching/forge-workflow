@@ -1,0 +1,83 @@
+name: mantis-bug-fix
+display_name: "Mantis — fix one bug by id"
+description: |
+  Run mantis-bug-fix-and-mr against a single Mantis bug id. Use this
+  for one-shot manual fixes ("hey, fix Mantis #1234 against branch
+  7.6"). For continuous monitoring, see the mantis-bug-watch recipe.
+
+  Pipeline: mantis-bug-fix-and-mr — pulls bug details → checkout
+  base_branch → Claude proposes a fix in a worktree → opens GitLab MR
+  via glab → notifies assignee + reporter on Teams.
+
+  Dependencies: glab CLI (for MR opening); the
+  mantis-bug-fix-and-mr workflow installed locally.
+version: "0.1.0"
+author: "forge"
+tags: ["mantis", "claude-code", "bug", "fix", "manual"]
+
+params:
+  - name: project
+    label: "Local project name (where Claude will checkout + edit code)"
+    type: project_picker
+    required: true
+
+  - name: bug_id
+    label: "Mantis bug id"
+    type: number
+    required: true
+    help: "The numeric id from the bug URL (view.php?id=1213844 → 1213844)."
+
+  - name: base_branch
+    label: "Base branch to fork from"
+    required: true
+    default: "main"
+    help: "The branch Claude will checkout + commit against. e.g. main, 7.6, release/7.6."
+
+job:
+  name_template: "mantis-fix-{{params.bug_id}}"
+  enabled: true
+  # Manual = doesn't auto-fire; you press Fire when ready.
+  schedule_kind: "manual"
+  schedule_interval_minutes: 0
+
+  source_connector: "mantis"
+  source_tool: "get_bug"
+  source_input:
+    bug_id: "{{params.bug_id}}"
+  # get_bug returns a single object — scheduler auto-wraps as 1-item list.
+  items_path: ""
+  dedup_field: "id"
+
+  dispatch_type: "pipeline"
+  dispatch_params:
+    workflow_name: "mantis-bug-fix-and-mr"
+    project_path: "{{env.HOME}}/IdeaProjects/{{params.project}}"
+    project_name: "{{params.project}}"
+    input_template:
+      project: "{{params.project}}"
+      bug_id: "{{item.id}}"
+      base_branch: "{{params.base_branch}}"
+      summary: "{{item.summary}}"
+      description: "{{item.description}}"
+      priority: "{{item.priority}}"
+      category: "{{item.category}}"
+      reporter: "{{item.reporter}}"
+      assignee: "{{item.assignee}}"
+      extra_context: ""
+      mr_title_template: "Fix Mantis #{{item.id}}: {{item.summary}}"
+      mr_body_template: |
+        ## Purpose
+        Fix Mantis bug #{bug_id} — {summary}
+
+        ## Mantis
+        MANTIS-{bug_id}
+
+        ## Description
+        {description}
+
+        ## Technical Description
+        {claude_summary}
+
+        ## Testing Done
+        TBD — please verify in CI + smoke test.
+      teams_message_template: ""

@@ -1,0 +1,10 @@
+{
+  "name": "mantis-bug-fix",
+  "display_name": "Mantis — fix one bug by id",
+  "description": "Manual / one-shot: fix a single Mantis bug. Press Fire when you're ready; Claude takes it from there. For continuous polling, use mantis-bug-watch.",
+  "version": "0.1.0",
+  "author": "forge",
+  "tags": ["mantis", "claude-code", "bug", "fix", "manual"],
+  "score": 0,
+  "rating": 0
+}
