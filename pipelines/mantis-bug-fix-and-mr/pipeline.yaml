@@ -159,7 +159,11 @@ nodes:
       set -e
       INFO=$'{{nodes.resolve.outputs.info}}'
       eval "$(echo "$INFO" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
-      PAYLOAD="{\"plugin_id\":\"mantis\",\"tool\":\"get_bug\",\"input\":{\"id\":$BUG_ID}}"
+      # Param name must be `bug_id` (matches mantis manifest's get_bug
+      # parameters.bug_id). Earlier versions sent `id`, which made
+      # {args.bug_id} resolve to empty → page URL became
+      # `?bug_id=undefined` → Mantis APPLICATION ERROR #1105.
+      PAYLOAD="{\"plugin_id\":\"mantis\",\"tool\":\"get_bug\",\"input\":{\"bug_id\":$BUG_ID}}"
       RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
         -H 'content-type: application/json' --data "$PAYLOAD")
       IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
