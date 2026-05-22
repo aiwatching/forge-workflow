@@ -119,8 +119,8 @@
     {
       "name": "mantis-bug-fix-and-mr",
       "display_name": "Mantis Bug Fix + MR",
-      "description": "Mantis: claim \u2192 triage \u2192 fix \u2192 push MR \u2192 resolution=fixed \u2192 bugnote \u2192 Teams \u2192 cleanup. Skips if last note says handled.",
-      "version": "0.4.0",
+      "description": "Mantis bug \u2192 claude fix \u2192 push & MR \u2192 resolution=fixed \u2192 bugnote (no Forge branding, ref:autofix-<id> for tracking) \u2192 Teams notify. Status no longer touched.",
+      "version": "0.5.0",
       "author": "forge",
       "tags": [
         "mantis",
