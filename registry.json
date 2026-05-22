@@ -56,6 +56,21 @@
         "fix",
         "auto"
       ]
+    },
+    {
+      "name": "mantis-bug-fix-batch",
+      "display_name": "Mantis \u2014 fix many bugs by id list",
+      "description": "Paste comma-separated bug ids \u2192 one pipeline per id. Per-Job max_per_tick gates concurrency.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "mantis",
+        "claude-code",
+        "bug",
+        "fix",
+        "manual",
+        "batch"
+      ]
     }
   ],
   "pipelines": [

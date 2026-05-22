@@ -1,0 +1,105 @@
+name: mantis-bug-fix-batch
+display_name: "Mantis — fix many bugs by id list"
+description: |
+  Like mantis-bug-fix but takes a COMMA-SEPARATED list of bug ids.
+  One Fire dispatches one mantis-bug-fix-and-mr pipeline per id.
+
+  Use when you have a hand-picked set of bugs (e.g. a Mantis filter
+  you triaged manually + want Forge to fix that exact list — without
+  setting up the periodic mantis-bug-watch poll).
+
+  Concurrency: per-Job `max_per_tick` defaults to 2 (so 20 ids
+  dispatch in 10 ticks, never overwhelming the project's worktrees
+  or the Mantis browser tab). Adjust under the Jobs form if your
+  machine can handle more in parallel.
+
+  Dedup is by bug id — re-pressing Fire on the same Job won't
+  re-process a bug that was already dispatched. Reset dedup from
+  the Job detail page if you want to retry.
+
+  Requires mantis connector ≥ v0.18.0 (list_bug_ids tool) +
+  mantis-bug-fix-and-mr workflow installed locally.
+version: "0.1.0"
+author: "forge"
+tags: ["mantis", "claude-code", "bug", "fix", "manual", "batch"]
+
+params:
+  - name: project
+    label: "Local project name (where Claude will checkout + edit code)"
+    type: project_picker
+    required: true
+
+  - name: bug_ids
+    label: "Mantis bug ids — comma separated"
+    required: true
+    help: |
+      e.g. "1234567,1234568,1234569". Spaces tolerated.
+      Each id becomes one dispatched pipeline.
+
+  - name: base_branch
+    label: "Base branch to fork from"
+    required: true
+    default: "main"
+    help: "Branch Claude checks out + commits against. Same value for every bug in this batch."
+
+  - name: max_per_tick
+    label: "Max pipelines to dispatch per Fire"
+    type: number
+    default: 2
+    help: |
+      Per-Job concurrency cap. Default 2 = at most 2 bug fixes in
+      flight at a time; the rest roll over to the next Fire (or to
+      a self-paced retry if the Job is set to period schedule).
+      Hard ceiling 10 enforced by the scheduler.
+
+job:
+  name_template: "mantis-fix-batch-{{params.project}}"
+  enabled: true
+  schedule_kind: "manual"
+  schedule_interval_minutes: 0
+  max_per_tick: "{{params.max_per_tick}}"
+
+  source_connector: "mantis"
+  source_tool: "list_bug_ids"
+  source_input:
+    ids: "{{params.bug_ids}}"
+  items_path: "bugs"
+  dedup_field: "id"
+
+  dispatch_type: "pipeline"
+  dispatch_params:
+    workflow_name: "mantis-bug-fix-and-mr"
+    project_path: "{{env.HOME}}/IdeaProjects/{{params.project}}"
+    project_name: "{{params.project}}"
+    input_template:
+      # list_bug_ids returns minimal {id} per item — the workflow's
+      # fetch-bug-details node pulls the full bug data when needed.
+      # We pass empty placeholders here so the pipeline has the right
+      # input shape; they're overwritten by fetch-bug-details output.
+      project: "{{params.project}}"
+      bug_id: "{{item.id}}"
+      base_branch: "{{params.base_branch}}"
+      summary: ""
+      description: ""
+      priority: ""
+      category: ""
+      reporter: ""
+      assignee: ""
+      extra_context: ""
+      mr_title_template: "Fix Mantis #{bug_id}: {summary}"
+      mr_body_template: |
+        ## Purpose
+        Fix Mantis bug #{bug_id} — {summary}
+
+        ## Mantis
+        MANTIS-{bug_id}
+
+        ## Description
+        {description}
+
+        ## Technical Description
+        {claude_summary}
+
+        ## Testing Done
+        TBD — please verify in CI + smoke test.
+      teams_message_template: ""
