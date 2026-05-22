@@ -1,8 +1,8 @@
 name: mantis-bug-fix-batch
 display_name: "Mantis — fix many bugs by id list"
 description: |
-  Like mantis-bug-fix but takes a COMMA-SEPARATED list of bug ids.
-  One Fire dispatches one mantis-bug-fix-and-mr pipeline per id.
+  Take a COMMA-SEPARATED list of Mantis bug ids, dispatch one
+  mantis-bug-fix-and-mr pipeline per id.
 
   Use when you have a hand-picked set of bugs (e.g. a Mantis filter
   you triaged manually + want Forge to fix that exact list — without
@@ -11,15 +11,18 @@ description: |
   Concurrency: per-Job `max_per_tick` defaults to 2 (so 20 ids
   dispatch in 10 ticks, never overwhelming the project's worktrees
   or the Mantis browser tab). Adjust under the Jobs form if your
-  machine can handle more in parallel.
+  machine can handle more.
 
-  Dedup is by bug id — re-pressing Fire on the same Job won't
+  Source: `inline` — the user's typed list is the items; no
+  connector / browser round-trip just to split a string.
+
+  Dedup by bug id — re-pressing Fire on the same Job won't
   re-process a bug that was already dispatched. Reset dedup from
   the Job detail page if you want to retry.
 
-  Requires mantis connector ≥ v0.18.0 (list_bug_ids tool) +
+  Requires Forge ≥ v0.9.0 (inline source support) +
   mantis-bug-fix-and-mr workflow installed locally.
-version: "0.1.0"
+version: "0.2.0"
 author: "forge"
 tags: ["mantis", "claude-code", "bug", "fix", "manual", "batch"]
 
@@ -31,6 +34,7 @@ params:
 
   - name: bug_ids
     label: "Mantis bug ids — comma separated"
+    type: csv_ids
     required: true
     help: |
       e.g. "1234567,1234568,1234569". Spaces tolerated.
@@ -48,9 +52,8 @@ params:
     default: 2
     help: |
       Per-Job concurrency cap. Default 2 = at most 2 bug fixes in
-      flight at a time; the rest roll over to the next Fire (or to
-      a self-paced retry if the Job is set to period schedule).
-      Hard ceiling 10 enforced by the scheduler.
+      flight at a time; the rest roll over to the next tick. Hard
+      ceiling 10 enforced by the scheduler.
 
 job:
   name_template: "mantis-fix-batch-{{params.project}}"
@@ -59,11 +62,15 @@ job:
   schedule_interval_minutes: 0
   max_per_tick: "{{params.max_per_tick}}"
 
-  source_connector: "mantis"
-  source_tool: "list_bug_ids"
+  # Inline source — no connector dispatch needed. The csv_ids param
+  # type produces `bug_ids__items` (an array of {id} objects); we
+  # bake it into source_input.items at instantiate time. Scheduler
+  # iterates it directly.
+  source_connector: "inline"
+  source_tool: ""
   source_input:
-    ids: "{{params.bug_ids}}"
-  items_path: "bugs"
+    items: "{{params.bug_ids__items}}"
+  items_path: "items"
   dedup_field: "id"
 
   dispatch_type: "pipeline"
@@ -72,10 +79,9 @@ job:
     project_path: "{{env.HOME}}/IdeaProjects/{{params.project}}"
     project_name: "{{params.project}}"
     input_template:
-      # list_bug_ids returns minimal {id} per item — the workflow's
-      # fetch-bug-details node pulls the full bug data when needed.
-      # We pass empty placeholders here so the pipeline has the right
-      # input shape; they're overwritten by fetch-bug-details output.
+      # items only carry {id} — workflow's fetch-bug-details node
+      # pulls full bug data when needed. Empty placeholders keep
+      # the input_template shape stable.
       project: "{{params.project}}"
       bug_id: "{{item.id}}"
       base_branch: "{{params.base_branch}}"

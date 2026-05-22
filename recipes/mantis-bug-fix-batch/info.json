@@ -2,7 +2,7 @@
   "name": "mantis-bug-fix-batch",
   "display_name": "Mantis — fix many bugs by id list",
   "description": "Hand-picked batch fixer: paste a comma-separated list of Mantis bug ids, Fire once, get one mantis-bug-fix-and-mr pipeline per id. Per-Job max_per_tick caps concurrency.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": "forge",
   "tags": ["mantis", "claude-code", "bug", "fix", "manual", "batch"],
   "score": 0,

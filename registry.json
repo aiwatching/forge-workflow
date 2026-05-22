@@ -60,8 +60,8 @@
     {
       "name": "mantis-bug-fix-batch",
       "display_name": "Mantis \u2014 fix many bugs by id list",
-      "description": "Paste comma-separated bug ids \u2192 one pipeline per id. Per-Job max_per_tick gates concurrency.",
-      "version": "0.1.0",
+      "description": "Paste comma-separated bug ids \u2192 one mantis-bug-fix-and-mr pipeline per id. Uses inline source \u2014 no connector round-trip.",
+      "version": "0.2.0",
       "author": "forge",
       "tags": [
         "mantis",
