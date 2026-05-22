@@ -90,8 +90,8 @@
     {
       "name": "gitlab-mr-reviewer-watch",
       "display_name": "GitLab MR pre-review (MRs assigned to me to review)",
-      "description": "Filter watch for MRs I should review \u2192 mr-pre-review analyses + posts comment + opens Forge chat.",
-      "version": "0.1.0",
+      "description": "Filter watch via search_mrs(reviewer_username) \u2014 accurately matches MRs awaiting MY review. Each new assignment \u2192 mr-pre-review pipeline.",
+      "version": "0.2.0",
       "author": "forge",
       "tags": [
         "gitlab",
