@@ -159,9 +159,12 @@ nodes:
         echo "BUG_JSON_B64="
         echo "SUMMARY="
         echo "CATEGORY="
+        echo "STATUS="
+        echo "RESOLUTION="
         echo "DESCRIPTION_B64="
         echo "ADDITIONAL_INFO_B64="
         echo "NOTES_B64="
+        echo "HISTORY_B64="
         exit 0
       fi
       # .content is itself a JSON string (the bug object); decode once.
@@ -182,14 +185,24 @@ nodes:
       ADDL_B64=$(echo "$BUG" | jq -r '.additional_information // ""' | base64 | tr -d '\n')
       # Notes with author + date + body, separated by ─── for readability.
       NOTES_B64=$(echo "$BUG" | jq -r '[.notes[]? | "[\(.author // "?") @ \(.date // "?")]\n\(.body // "")"] | join("\n\n─────────────\n\n")' 2>/dev/null | base64 | tr -d '\n')
+      # Change log — who edited which field, when, old → new. Critical
+      # for triage to detect "bug was rewritten after I last saw it".
+      HISTORY_B64=$(echo "$BUG" | jq -r '[.history[]? | "[\(.author // "?") @ \(.date // "?")] \(.field // .change // "?"): \(.old // "?") → \(.new // "?")"] | join("\n")' 2>/dev/null | base64 | tr -d '\n')
+      # Current status/resolution snapshot — triage uses these to
+      # short-circuit when bug is already resolved/closed.
+      STATUS=$(echo "$BUG" | jq -r '.status // ""' | tr -d '\n')
+      RESOLUTION=$(echo "$BUG" | jq -r '.resolution // ""' | tr -d '\n')
 
       echo "BUG_ID=$BUG_ID"
       echo "SUMMARY=$SUMMARY"
       echo "CATEGORY=$CAT"
       echo "REPRODUCIBILITY=$REPRO"
+      echo "STATUS=$STATUS"
+      echo "RESOLUTION=$RESOLUTION"
       echo "DESCRIPTION_B64=$DESC_B64"
       echo "ADDITIONAL_INFO_B64=$ADDL_B64"
       echo "NOTES_B64=$NOTES_B64"
+      echo "HISTORY_B64=$HISTORY_B64"
       echo "BUG_JSON_B64=$BUG_JSON_B64"
 
       # ── Human-readable preview to stderr ──
@@ -244,6 +257,106 @@ nodes:
   # status → feedback at the start. Removed by request — status is now
   # left untouched throughout the pipeline; only resolution is updated
   # by mark-fixed at the end.
+
+  # ── Triage ───────────────────────────────────────────────────
+  # Holistic semantic check BEFORE we spend time on worktree-setup +
+  # download-attachments + Claude fix. Reads everything fetch-bug-
+  # details produced (summary, description, additional info, notes,
+  # history, status, resolution) and decides ACT vs SKIP.
+  #
+  # SKIP conditions (any one is enough):
+  #   - resolution already set to fixed / wont_fix / not_a_bug /
+  #     duplicate / not_fixable / suspended
+  #   - a recent note contains an MR / commit / PR URL ("someone
+  #     already submitted a fix") — Forge's own or a human's
+  #     (Forge marker = "ref: autofix-<id>" footer)
+  #   - history shows the bug summary / description was substantially
+  #     rewritten by a non-reporter recently (problem may have shifted)
+  #   - bug already closed / resolved
+  #
+  # Output ends with EXACTLY one line: `ACTION: act` OR `ACTION: skip`,
+  # plus a structured reason block for downstream logging. Downstream
+  # nodes grep for `ACTION: act` to decide whether to do real work.
+  triage:
+    worktree: false
+    project: "{{input.project}}"
+    depends_on:
+      - fetch-bug-details
+    prompt: >
+      You are triaging a Mantis bug to decide if Forge should attempt
+      an auto-fix. Read the full bug context below — summary,
+      description, additional info, notes (newest last), history
+      (newest last), status, resolution — and decide ACT or SKIP.
+
+
+      ## Bug coordinates
+
+      ID: {{input.bug_id}} · Priority: {{input.priority}} ·
+      Reporter: {{input.reporter}} · Assignee: {{input.assignee}}
+
+
+      ## Bug data (from fetch-bug-details)
+
+      The fetch node exported KEY=value lines. Multi-line fields are
+      base64. Decode with `echo "<value>" | base64 -d`.
+
+
+      {{nodes.fetch-bug-details.outputs.details}}
+
+
+      ## Decide
+
+      SKIP if ANY of these is true:
+
+      1. `RESOLUTION` is anything other than `open` or empty (it
+         means the bug has already been resolved/closed by someone).
+
+      2. The notes (NOTES_B64) contain an MR URL, commit SHA, "PR #",
+         or "merge request" reference from anyone — Forge already
+         posted one (look for `ref: autofix-<bug_id>` footer) OR a
+         human is already on it.
+
+      3. The notes contain phrases like "fixed in", "merged",
+         "duplicate of", "abandoned", "won't fix", "by design",
+         "not reproducible".
+
+      4. The history (HISTORY_B64) shows the bug `summary` or
+         `description` was edited by someone OTHER than the reporter
+         within the last 7 days. This means the problem definition
+         may have shifted; humans need to re-read before automating.
+
+      5. The summary / description is too vague or too broad to fix
+         without clarification (e.g. "all login flows broken" or
+         single-sentence reports).
+
+
+      Otherwise: ACT.
+
+
+      ## Output format
+
+      Output EXACTLY this, no extra prose around the block:
+
+
+      ```
+      ─── TRIAGE ───
+      VERDICT:      <one of: act | skip>
+      ONE_LINER:    <≤ 80 chars summary of decision>
+
+      Reasoning:
+      <2-5 bullet points explaining the call — cite specific note /
+       history / field that drove the decision>
+
+      ACTION: <act | skip>
+      ```
+
+
+      The `ACTION:` line at the bottom is parsed by downstream nodes —
+      get it exactly right (lowercase, no period).
+    mode: shell
+    outputs:
+      - name: report
+        extract: stdout
 
   download-attachments:
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
@@ -376,17 +489,28 @@ nodes:
       yourself, stage + commit.
 
 
-      ## FIRST — skip-if-handled check
+      ## FIRST — read triage decision
 
-      Before doing anything, read the latest non-system bugnotes in
-      DETAILS / NOTES below. If the latest activity indicates someone
-      already handled this (Forge previously fixed it, a human
-      committed/merged a fix, the issue was marked won't-fix /
-      duplicate / abandoned, etc.), DO NOT edit files or commit.
-      Just write one paragraph explaining what you saw in the notes
-      and end your reply. The pipeline's downstream nodes detect
-      "no commits added" automatically and skip MR creation +
-      surface a Mantis bugnote noting the skip.
+      The upstream `triage` node already did a holistic semantic
+      check (notes, history, status, resolution). Its full report:
+
+
+      {{nodes.triage.outputs.report}}
+
+
+      Parse the final `ACTION:` line. Behaviour:
+
+      - `ACTION: act`   → continue with the fix below.
+
+      - `ACTION: skip`  → DO NOT edit files. Write ONE paragraph
+        echoing triage's reasoning, then stop. Downstream nodes
+        detect "no commits" and skip MR creation + post a SKIP
+        bugnote noting why.
+
+
+      Belt-and-suspenders: even on `ACT`, if the latest non-system
+      bugnote clearly says someone already submitted a fix that
+      triage somehow missed, follow the SKIP path above.
 
 
       ## Bug
@@ -502,6 +626,7 @@ nodes:
       - worktree-setup
       - fetch-bug-details
       - download-attachments
+      - triage
     outputs:
       - name: summary
         extract: result
