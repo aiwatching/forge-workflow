@@ -164,21 +164,25 @@ nodes:
         -H 'content-type: application/json' --data "$PAYLOAD")
       IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
       if [ "$IS_ERR" = "true" ]; then
-        echo "WARN: mantis.get_bug failed: $(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 300)" >&2
-        echo "BUG_ID=$BUG_ID"
-        echo "BUG_JSON_B64="
-        echo "SUMMARY="
-        echo "CATEGORY="
-        echo "STATUS="
-        echo "RESOLUTION="
-        echo "DESCRIPTION_B64="
-        echo "ADDITIONAL_INFO_B64="
-        echo "NOTES_B64="
-        echo "HISTORY_B64="
-        exit 0
+        echo "ERROR: mantis.get_bug failed: $(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 300)" >&2
+        echo "ERROR: bug $BUG_ID detail not fetched — pipeline aborting before triage/fix to avoid posting a misleading 'no fix' bugnote on Mantis." >&2
+        exit 1
       fi
       # .content is itself a JSON string (the bug object); decode once.
       BUG=$(echo "$RESP" | jq -r '.content' | jq -c '.')
+      # Even when the connector returned is_error=false, the bug-view
+      # script may have emitted `{"_error": "bug detail table not
+      # found on /bug_view_page.php"}` — i.e. the page loaded but
+      # wasn't the expected bug-detail layout (auth lost, custom Mantis
+      # theme, deleted bug, etc.). Treat this as fatal too — running
+      # triage on empty data would skip with "vague" and post a
+      # misleading bugnote.
+      BUG_INNER_ERR=$(echo "$BUG" | jq -r '._error // empty')
+      if [ -n "$BUG_INNER_ERR" ]; then
+        echo "ERROR: mantis.get_bug returned _error: $BUG_INNER_ERR" >&2
+        echo "ERROR: pipeline aborting before triage." >&2
+        exit 1
+      fi
 
       # Whole bug as base64 — gives fix-code an escape hatch to read any
       # field we didn't bother to enumerate (history, _fields_raw, etc).
