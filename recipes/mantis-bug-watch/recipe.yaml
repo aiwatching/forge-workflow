@@ -13,7 +13,7 @@ description: |
   Tip: the first tick after creation can dispatch a lot of historical
   bugs. To skip backfill, edit the Job after creation and set the
   hidden flag `__mark_existing_as_seen: true` for one tick.
-version: "0.1.0"
+version: "0.5.0"
 author: "forge"
 tags: ["mantis", "claude-code", "bug", "fix", "auto"]
 
