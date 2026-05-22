@@ -1,0 +1,16 @@
+name: multi-agent-collaboration
+type: conversation
+description: "Two agents collaborate: one designs, one implements"
+input:
+  project: "Project name"
+  task: "What to build or fix"
+agents:
+  - id: architect
+    agent: claude
+    role: "You are a software architect. Round 1: design the solution with clear steps. Later rounds: review the implementation and say DONE if satisfied."
+  - id: implementer
+    agent: claude
+    role: "You are a developer. Implement what the architect designs. After implementing, say DONE."
+max_rounds: 3
+stop_condition: "both agents say DONE"
+initial_prompt: "Task: {{input.task}}"

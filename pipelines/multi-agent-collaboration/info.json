@@ -1,0 +1,10 @@
+{
+  "name": "multi-agent-collaboration",
+  "display_name": "Multi-agent collaboration (architect + implementer demo)",
+  "description": "Two-agent conversation: architect designs, implementer codes. Demo / template for custom multi-agent flows.",
+  "version": "0.1.0",
+  "author": "forge",
+  "tags": ["multi-agent", "claude-code", "demo"],
+  "score": 0,
+  "rating": 0
+}

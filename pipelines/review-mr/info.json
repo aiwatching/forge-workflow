@@ -1,0 +1,10 @@
+{
+  "name": "review-mr",
+  "display_name": "GitHub PR review (AI comment)",
+  "description": "GitHub PR auto-review: fetch diff → analyze → post markdown review comment via gh. Use mr-review-fix for GitLab MRs.",
+  "version": "0.1.0",
+  "author": "forge",
+  "tags": ["github", "pr", "claude-code", "review"],
+  "score": 0,
+  "rating": 0
+}

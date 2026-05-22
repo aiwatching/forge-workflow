@@ -1,0 +1,92 @@
+name: issue-fix-and-review
+description: "Fetch GitHub issue → fix code → create PR → review PR → notify"
+input:
+  issue_id: "GitHub issue number"
+  project: "Project name"
+  base_branch: "Base branch (default: auto-detect)"
+  extra_context: "Additional instructions for the fix (optional)"
+nodes:
+  setup:
+    mode: shell
+    project: "{{input.project}}"
+    prompt: |
+      cd "$(git rev-parse --show-toplevel)" &&       if [ -n "$(git status --porcelain)" ]; then echo "ERROR: Working directory has uncommitted changes. Please commit or stash first." && exit 1; fi &&       ORIG_BRANCH=$(git branch --show-current || git rev-parse --short HEAD) &&       REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git remote get-url origin | sed 's/.*github.com[:/]//;s/.git$//') &&       BASE="{{input.base_branch}}" &&       if [ -z "$BASE" ] || [ "$BASE" = "auto-detect" ]; then BASE=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's@^refs/remotes/origin/@@' || echo main); fi &&       git checkout "$BASE" 2>/dev/null || true &&       git pull origin "$BASE" 2>/dev/null || true &&       OLD_BRANCH=$(git branch --list "fix/{{input.issue_id}}-*" | head -1 | tr -d ' *') &&       if [ -n "$OLD_BRANCH" ]; then git branch -D "$OLD_BRANCH" 2>/dev/null || true; fi &&       echo "REPO=$REPO" && echo "BASE=$BASE" && echo "ORIG_BRANCH=$ORIG_BRANCH"
+    outputs:
+      - name: info
+        extract: stdout
+  fetch-issue:
+    mode: shell
+    project: "{{input.project}}"
+    depends_on: [setup]
+    prompt: |
+      ISSUE_ID="{{input.issue_id}}" &&       if [ -z "$ISSUE_ID" ]; then echo "__SKIP__ No issue_id provided" && exit 0; fi &&       SETUP_INFO=$'{{nodes.setup.outputs.info}}' &&       REPO=$(echo "$SETUP_INFO" | grep REPO= | cut -d= -f2) &&       gh issue view "$ISSUE_ID" --json title,body,labels,number -R "$REPO"
+    outputs:
+      - name: issue_json
+        extract: stdout
+  fix-code:
+    project: "{{input.project}}"
+    depends_on: [fetch-issue]
+    prompt: |
+      A GitHub issue needs to be fixed. Here is the issue data:
+
+      {{nodes.fetch-issue.outputs.issue_json}}
+
+      Steps:
+      1. Create a new branch from the current branch (which is already on the base). Name format: fix/{{input.issue_id}}-<short-description> (e.g. fix/3-add-validation, fix/15-null-pointer). Any old branch for this issue has been cleaned up.
+      2. Analyze the issue and fix the code.
+      3. Stage and commit with a message referencing #{{input.issue_id}}.
+
+      Base branch info: {{nodes.setup.outputs.info}}
+
+      Additional context from user: {{input.extra_context}}
+    outputs:
+      - name: summary
+        extract: result
+      - name: diff
+        extract: git_diff
+  push-and-pr:
+    mode: shell
+    project: "{{input.project}}"
+    depends_on: [fix-code]
+    prompt: |
+      SETUP_INFO=$'{{nodes.setup.outputs.info}}' &&       REPO=$(echo "$SETUP_INFO" | grep REPO= | cut -d= -f2) &&       BRANCH=$(git branch --show-current) &&       git push -u origin "$BRANCH" --force-with-lease 2>&1 &&       PR_URL=$(gh pr create --title "Fix #{{input.issue_id}}"         --body "Auto-fix by Forge Pipeline for issue #{{input.issue_id}}." -R "$REPO" 2>/dev/null ||         gh pr view "$BRANCH" --json url -q .url -R "$REPO" 2>/dev/null) &&       echo "$PR_URL"
+    outputs:
+      - name: pr_url
+        extract: stdout
+  review:
+    project: "{{input.project}}"
+    depends_on: [push-and-pr]
+    prompt: |
+      Review the code changes for issue #{{input.issue_id}}.
+
+      Fix summary: {{nodes.fix-code.outputs.summary}}
+
+      Git diff:
+      {{nodes.fix-code.outputs.diff}}
+
+      Check for:
+      - Bugs and logic errors
+      - Security vulnerabilities
+      - Performance issues
+      - Whether the fix actually addresses the issue
+
+      Respond with:
+      1. APPROVED or CHANGES_REQUESTED
+      2. Specific issues found with file paths and line numbers
+    outputs:
+      - name: review_result
+        extract: result
+  cleanup:
+    mode: shell
+    project: "{{input.project}}"
+    depends_on: [review]
+    prompt: |
+      SETUP_INFO=$'{{nodes.setup.outputs.info}}' &&       ORIG=$(echo "$SETUP_INFO" | grep ORIG_BRANCH= | cut -d= -f2) &&       PR_URL=$'{{nodes.push-and-pr.outputs.pr_url}}' &&       if [ -n "$(git status --porcelain)" ]; then
+        echo "Issue #{{input.issue_id}} — PR: $PR_URL (staying on $(git branch --show-current))"
+      else
+        git checkout "$ORIG" 2>/dev/null || true
+        echo "Issue #{{input.issue_id}} — PR: $PR_URL (switched back to $ORIG)"
+      fi
+    outputs:
+      - name: result
+        extract: stdout

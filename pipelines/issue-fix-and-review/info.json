@@ -1,0 +1,10 @@
+{
+  "name": "issue-fix-and-review",
+  "display_name": "GitHub Issue → Fix → PR → Review",
+  "description": "Fetch GitHub issue → Claude proposes fix → push branch + open PR → AI code review.",
+  "version": "0.1.0",
+  "author": "forge",
+  "tags": ["github", "issue", "claude-code", "review", "auto"],
+  "score": 0,
+  "rating": 0
+}
