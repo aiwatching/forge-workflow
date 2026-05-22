@@ -94,8 +94,15 @@ nodes:
 
       {
         # 1. Remove the on-disk worktree for THIS bug (idempotent).
+        #    git worktree remove only deletes tracked content + .git
+        #    metadata — gitignored build artifacts (.class, target/,
+        #    node_modules, etc.) remain and leave non-empty subdirs.
+        #    Follow up with rm -rf to nuke leftovers, otherwise the
+        #    subsequent `git worktree add` errors with "already exists
+        #    and not empty".
         if [ -d "$WORKTREE_DIR" ]; then
-          git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || rm -rf "$WORKTREE_DIR"
+          git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
+          rm -rf "$WORKTREE_DIR" 2>/dev/null || true
         fi
         # 2. Drop stale worktree registrations + any other worktree pinning
         #    our branch. Without (3), "fatal: <branch> already used by
@@ -105,7 +112,10 @@ nodes:
           /^worktree /{w=$2}
           $0=="branch "b{print w}
         ' | while read w; do
-          [ -n "$w" ] && git worktree remove --force "$w" 2>/dev/null || true
+          if [ -n "$w" ]; then
+            git worktree remove --force "$w" 2>/dev/null || true
+            rm -rf "$w" 2>/dev/null || true
+          fi
         done
         git branch -D "$BRANCH" 2>/dev/null || true
         mkdir -p "$ROOT/.forge/worktrees"
@@ -353,7 +363,9 @@ nodes:
 
       The `ACTION:` line at the bottom is parsed by downstream nodes —
       get it exactly right (lowercase, no period).
-    mode: shell
+    # NOTE: do NOT set `mode: shell` here. The prompt is natural-
+    # language for Claude — bash would explode on the parentheses,
+    # em-dashes, and Unicode in the spec block above.
     outputs:
       - name: report
         extract: stdout
