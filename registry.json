@@ -71,6 +71,35 @@
         "manual",
         "batch"
       ]
+    },
+    {
+      "name": "gitlab-mr-author-watch",
+      "display_name": "GitLab MR auto-fix (all MRs I authored)",
+      "description": "Filter watch for my open MRs \u2192 mr-review-fix when comments change.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "gitlab",
+        "mr",
+        "claude-code",
+        "review",
+        "auto",
+        "author"
+      ]
+    },
+    {
+      "name": "gitlab-mr-reviewer-watch",
+      "display_name": "GitLab MR pre-review (MRs assigned to me to review)",
+      "description": "Filter watch for MRs I should review \u2192 mr-pre-review analyses + posts comment + opens Forge chat.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "gitlab",
+        "mr",
+        "claude-code",
+        "review",
+        "reviewer"
+      ]
     }
   ],
   "pipelines": [
@@ -99,6 +128,18 @@
         "claude-code",
         "fix",
         "mr"
+      ]
+    },
+    {
+      "name": "mr-pre-review",
+      "display_name": "GitLab MR pre-review",
+      "description": "Analyze + post pre-review comment + open Forge chat session.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "gitlab",
+        "mr",
+        "review"
       ]
     }
   ]

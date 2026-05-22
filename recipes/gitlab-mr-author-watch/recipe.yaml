@@ -1,0 +1,93 @@
+name: gitlab-mr-author-watch
+display_name: "GitLab MR auto-fix (all MRs I authored)"
+description: |
+  Filter-based watch for ALL MRs I created. When a reviewer adds a
+  comment to any of them, fire the mr-review-fix pipeline on that
+  MR — triage holistically, fix if actionable, reply.
+
+  Differs from gitlab-mr-watch (single MR by URL):
+    - This one auto-discovers MRs by `scope=created_by_me`
+    - Add a target-branch filter to narrow (e.g. only main)
+
+  Dedup is by `<iid>:<user_notes_count>` — a change in comment count
+  on ANY watched MR is a separate dispatch.
+
+  Requires gitlab connector ≥ v1.5.0 (list_authored_mrs tool).
+
+version: "0.1.0"
+author: "forge"
+tags: ["gitlab", "mr", "claude-code", "review", "auto", "author"]
+
+params:
+  - name: project
+    label: "Local project name"
+    type: project_picker
+    required: true
+    help: "Where Claude does git ops + edits. e.g. FortiNAC."
+
+  - name: gitlab_project_id
+    label: "GitLab project (namespace/repo)"
+    required: true
+    help: |
+      e.g. fortinac/FortiNAC. Used for per-MR pipeline dispatch.
+      Currently the same value for all watched MRs; if you author
+      across multiple GitLab projects make one Job per project.
+
+  - name: target_branch
+    label: "Target branch filter (optional)"
+    help: "e.g. main, 7.6. Leave empty to watch all targets."
+
+  - name: schedule_minutes
+    label: "Poll interval (minutes)"
+    type: number
+    default: 5
+
+  - name: triage_instructions
+    label: "Triage policy (optional)"
+    default: |
+      ACT on any concrete code change request from a human reviewer
+      (missing cleanup, refactor with clear rationale, bug, missing
+      test, security concern) AND on 'error' findings from code review
+      bots.
+
+      SKIP approvals / lgtm / style-nits / questions / bot warnings
+      about MR metadata.
+
+      NOOP when the latest non-system comment was authored by Forge
+      itself (body starts with '🤖 Forge:') OR by the same GitLab
+      user this Job runs as.
+
+job:
+  name_template: "mr-author-watch-{{params.project}}"
+  enabled: true
+  schedule_kind: "period"
+  schedule_interval_minutes: "{{params.schedule_minutes}}"
+
+  source_connector: "gitlab"
+  source_tool: "list_authored_mrs"
+  source_input:
+    state: "opened"
+    target_branch: "{{params.target_branch}}"
+    per_page: 100
+    # Stop first-tick stampede — register every existing MR's current
+    # comment count as "seen". You'll only get dispatched when a NEW
+    # comment lands after Job creation.
+    __mark_existing_as_seen: true
+  items_path: ""
+  # Per-item dedup signature: iid + comment-count.
+  # When someone adds a comment on MR 42, user_notes_count goes from
+  # N to N+1 → new signature → dispatch. Same MR no new comment →
+  # signature unchanged → no dispatch.
+  dedup_field: "iid:user_notes_count"
+
+  dispatch_type: "pipeline"
+  dispatch_params:
+    workflow_name: "mr-review-fix"
+    project_path: "{{env.HOME}}/IdeaProjects/{{params.project}}"
+    project_name: "{{params.project}}"
+    input_template:
+      project: "{{params.project}}"
+      mr_iid: "{{item.iid}}"
+      gitlab_project_id: "{{params.gitlab_project_id}}"
+      mr_url: "{{item.web_url}}"
+      triage_instructions: "{{params.triage_instructions}}"

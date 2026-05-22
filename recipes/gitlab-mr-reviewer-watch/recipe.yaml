@@ -1,0 +1,88 @@
+name: gitlab-mr-reviewer-watch
+display_name: "GitLab MR pre-review (MRs assigned to me to review)"
+description: |
+  Filter-based watch for ALL MRs assigned to me as a reviewer. For
+  each NEW MR that lands in my reviewer queue, run mr-pre-review:
+    1. fetch MR + diff + history
+    2. Claude analyses, classifies as 'looks-good' / 'has-concerns' /
+       'need-discussion' + lists specific findings
+    3. post '🤖 Forge pre-review:' comment on the MR
+    4. open a Forge chat session pre-loaded with the analysis so you
+       can discuss + decide to approve / request changes
+
+  Dedup is by MR `id` — each unique MR is reviewed at most once per
+  Job lifetime. If the MR gets updated and you want a fresh review,
+  reset dedup on the Job detail page.
+
+  Requires gitlab connector ≥ v1.5.0 (list_my_mrs with scope=assigned_to_me).
+
+version: "0.1.0"
+author: "forge"
+tags: ["gitlab", "mr", "claude-code", "review", "reviewer"]
+
+params:
+  - name: project
+    label: "Local project name"
+    type: project_picker
+    required: true
+    help: "Where Claude clones / reads code while analysing. e.g. FortiNAC."
+
+  - name: gitlab_project_id
+    label: "GitLab project (namespace/repo)"
+    required: true
+    help: |
+      e.g. fortinac/FortiNAC. Currently the same value for all
+      watched MRs; if you review across multiple GitLab projects
+      make one Job per project.
+
+  - name: target_branch
+    label: "Target branch filter (optional)"
+    help: "e.g. main, 7.6. Leave empty to review all targets."
+
+  - name: schedule_minutes
+    label: "Poll interval (minutes)"
+    type: number
+    default: 10
+
+  - name: review_focus
+    label: "Review focus (optional)"
+    default: |
+      Correctness, security, error handling, test coverage, and
+      readability. Be specific about file:line when raising findings.
+      Be terse — don't restate what the code obviously does.
+    help: "What Claude should weigh when analysing the diff. Free-form."
+
+job:
+  name_template: "mr-reviewer-watch-{{params.project}}"
+  enabled: true
+  schedule_kind: "period"
+  schedule_interval_minutes: "{{params.schedule_minutes}}"
+
+  source_connector: "gitlab"
+  source_tool: "list_my_mrs"
+  source_input:
+    state: "opened"
+    target_branch: "{{params.target_branch}}"
+    per_page: 100
+    # Existing MRs in your queue when Job is created are NOT
+    # auto-reviewed. Only NEW assignments after Job creation trigger
+    # a review. (To review a backlog, recreate Job without this flag.)
+    __mark_existing_as_seen: true
+  items_path: ""
+  dedup_field: "id"
+
+  dispatch_type: "pipeline"
+  dispatch_params:
+    workflow_name: "mr-pre-review"
+    project_path: "{{env.HOME}}/IdeaProjects/{{params.project}}"
+    project_name: "{{params.project}}"
+    input_template:
+      project: "{{params.project}}"
+      mr_iid: "{{item.iid}}"
+      gitlab_project_id: "{{params.gitlab_project_id}}"
+      mr_url: "{{item.web_url}}"
+      mr_title: "{{item.title}}"
+      author_username: "{{item.author.username}}"
+      source_branch: "{{item.source_branch}}"
+      target_branch: "{{item.target_branch}}"
+      review_focus: "{{params.review_focus}}"

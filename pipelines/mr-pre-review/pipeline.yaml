@@ -1,0 +1,241 @@
+name: mr-pre-review
+description: |
+  GitLab MR auto pre-review. Claude looks at the diff + history,
+  classifies as looks-good / has-concerns / need-discussion +
+  enumerates concrete findings, posts a single
+  '🤖 Forge pre-review:' comment on the MR, and opens a Forge chat
+  session for the reviewer to discuss + decide approve / request
+  changes / comment manually.
+
+  Triggered per MR (one MR = one pipeline run). Source is the
+  gitlab-mr-reviewer-watch recipe; dedup ensures each MR is reviewed
+  at most once unless reset.
+
+# Required input (from recipe):
+#   project, mr_iid, gitlab_project_id, mr_url, mr_title,
+#   author_username, source_branch, target_branch, review_focus
+#
+# Prereqs:
+#   - glab CLI authenticated to the GitLab host
+#   - jq installed
+#   - The fetch + analyse node use a chat-capable agent (any profile).
+
+version: "0.1.0"
+
+input:
+  project: "Local Forge project name (e.g. FortiNAC)"
+  mr_iid: "GitLab MR iid"
+  gitlab_project_id: "GitLab project — namespace/repo or numeric id"
+  mr_url: "Full MR URL"
+  mr_title: "MR title (for chat session label)"
+  author_username: "MR author's GitLab username"
+  source_branch: "MR source branch"
+  target_branch: "MR target branch"
+  review_focus: "What Claude should weigh (free-form)"
+
+nodes:
+  ingest:
+    worktree: false
+    project: "{{input.project}}"
+    prompt: |
+      Echo the MR coordinates so downstream nodes can grep them out of
+      `nodes.ingest.outputs.context`.
+      set -e
+      echo "MR_IID={{input.mr_iid}}"
+      echo "GITLAB_PROJECT_ID={{input.gitlab_project_id}}"
+      echo "MR_URL={{input.mr_url}}"
+      echo "MR_TITLE={{input.mr_title}}"
+      echo "AUTHOR={{input.author_username}}"
+      echo "SOURCE_BRANCH={{input.source_branch}}"
+      echo "TARGET_BRANCH={{input.target_branch}}"
+    outputs:
+      context: "$STDOUT"
+
+  fetch:
+    worktree: false
+    project: "{{input.project}}"
+    depends_on:
+      - ingest
+    prompt: |
+      Fetch MR details + diff + existing discussion via glab. Emit
+      base64-encoded blobs so downstream nodes don't have shell
+      escaping issues.
+
+      set -e
+      eval "$(echo '{{nodes.ingest.outputs.context}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+
+      glab api "projects/$(printf '%s' "$GITLAB_PROJECT_ID" | sed 's|/|%2F|g')/merge_requests/$MR_IID" \
+        | jq -c '{
+            id, iid, title, description, state, draft,
+            web_url, source_branch, target_branch,
+            author: .author.username,
+            assignees: [.assignees[]?.username],
+            reviewers: [.reviewers[]?.username],
+            user_notes_count, changes_count
+          }' > /tmp/mr-meta.json
+
+      glab api "projects/$(printf '%s' "$GITLAB_PROJECT_ID" | sed 's|/|%2F|g')/merge_requests/$MR_IID/changes" \
+        | jq -c '{ diff_refs, changes: [.changes[] | { old_path, new_path, new_file, renamed_file, deleted_file, diff }] }' > /tmp/mr-diff.json
+
+      glab api "projects/$(printf '%s' "$GITLAB_PROJECT_ID" | sed 's|/|%2F|g')/merge_requests/$MR_IID/notes?per_page=100&sort=asc" \
+        | jq -c '[.[] | select(.system == false) | { id, author: .author.username, body, created_at }]' > /tmp/mr-notes.json
+
+      echo "META_B64=$(base64 < /tmp/mr-meta.json | tr -d '\n')"
+      echo "DIFF_B64=$(base64 < /tmp/mr-diff.json | tr -d '\n')"
+      echo "NOTES_B64=$(base64 < /tmp/mr-notes.json | tr -d '\n')"
+    outputs:
+      data: "$STDOUT"
+
+  analyze:
+    worktree: false
+    project: "{{input.project}}"
+    depends_on:
+      - fetch
+    prompt: |
+      You're reviewing a GitLab merge request. Read the MR metadata,
+      diff, and existing discussion. Produce ONE structured analysis
+      that the downstream node will turn into a GitLab comment + a
+      Forge chat seed.
+
+      ## Input
+
+      Run these to decode:
+      ```
+      eval "$(echo '{{nodes.fetch.outputs.data}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      echo "$META_B64"  | base64 -d
+      echo "$DIFF_B64"  | base64 -d
+      echo "$NOTES_B64" | base64 -d
+      ```
+
+      ## Review focus
+
+      {{input.review_focus}}
+
+      ## What to produce
+
+      Output EXACTLY in this format, no extra prose:
+
+      ```
+      ─── VERDICT ───
+      <one of: looks-good | has-concerns | need-discussion>
+
+      ─── ONE-LINER ───
+      <≤ 80 chars, what this MR does in plain English>
+
+      ─── FINDINGS ───
+      <bullet list, each line:
+        - <severity: info|nit|concern|blocker> <file:line> <terse description>
+        - ...
+      If nothing to flag, write: "(none)" on a single line.>
+
+      ─── DISCUSSION POINTS ───
+      <questions / decisions for the human reviewer to weigh in on,
+       bullet list. If none, write "(none)".>
+
+      ─── REPLY DRAFT ───
+      <markdown body that will be posted to GitLab as the
+       '🤖 Forge pre-review:' comment. Should be terse, useful,
+       no rubber-stamp. NEVER say 'approved' / 'lgtm' / 'rejected' —
+       leave the verdict to the human. ≤ 400 words.>
+      ```
+
+      Rules:
+        - Stay neutral. You're informing a decision, not making it.
+        - Cite file:line when raising findings.
+        - Don't restate what the diff obviously does.
+        - If the MR is draft / WIP, note that and use verdict
+          'need-discussion'.
+        - If the diff is too large to fully assess, say so explicitly
+          and list which files / functions you DID examine vs not.
+    outputs:
+      report: "$STDOUT"
+
+  post-comment:
+    worktree: false
+    project: "{{input.project}}"
+    depends_on:
+      - analyze
+    prompt: |
+      Extract the REPLY DRAFT section from analyze's output and post
+      it as a GitLab comment on the MR.
+
+      set -e
+      eval "$(echo '{{nodes.ingest.outputs.context}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+
+      # Pull REPLY DRAFT from the analysis report
+      cat > /tmp/analyze-report <<'REPORT_EOF'
+      {{nodes.analyze.outputs.report}}
+      REPORT_EOF
+
+      python3 - <<'PY' > /tmp/reply-body
+      import re, sys
+      with open('/tmp/analyze-report') as f:
+          text = f.read()
+      m = re.search(r'─── REPLY DRAFT ───\s*\n(.+)', text, re.DOTALL)
+      body = m.group(1).strip() if m else "(Forge pre-review: analysis output malformed — see Job log.)"
+      print("🤖 Forge pre-review:")
+      print()
+      print(body)
+      PY
+
+      # Use glab note create to post
+      glab api -X POST \
+        "projects/$(printf '%s' "$GITLAB_PROJECT_ID" | sed 's|/|%2F|g')/merge_requests/$MR_IID/notes" \
+        --field "body=$(cat /tmp/reply-body)" \
+        > /dev/null
+
+      echo "POSTED=yes"
+      echo "MR_URL=$MR_URL"
+    outputs:
+      status: "$STDOUT"
+
+  notify-chat:
+    worktree: false
+    project: "{{input.project}}"
+    depends_on:
+      - post-comment
+    prompt: |
+      Create a Forge chat session seeded with the analysis so the
+      reviewer can drill in. The chat starts with the full report
+      + a prompt asking the reviewer what they want to do.
+
+      set -e
+      eval "$(echo '{{nodes.ingest.outputs.context}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+
+      cat > /tmp/seed-prompt <<EOF
+      # MR pre-review — $MR_TITLE
+
+      MR: $MR_URL
+      Author: @$AUTHOR
+      Branch: $SOURCE_BRANCH → $TARGET_BRANCH
+
+      ─── Forge's analysis ───
+
+      {{nodes.analyze.outputs.report}}
+
+      ─── Next step ───
+
+      Forge has posted the REPLY DRAFT as a comment on the MR.
+      What do you want to do?
+        a) Approve the MR (run \`glab mr approve $MR_IID\` from the worktree)
+        b) Request changes (write a follow-up comment via \`glab mr note create\`)
+        c) Investigate further (ask me to look at specific files / behaviours)
+        d) Nothing — leave it as is
+
+      Pick a/b/c/d and I'll help.
+      EOF
+
+      # Open a Forge chat session via local API
+      curl -sS -X POST http://127.0.0.1:8403/api/chat-proxy/sessions \
+        -H 'content-type: application/json' \
+        --data "$(jq -nc \
+          --arg title "MR pre-review: $MR_TITLE" \
+          --arg project "{{input.project}}" \
+          --rawfile seed /tmp/seed-prompt \
+          '{title: $title, project: $project, seed_message: $seed}')" \
+        | jq -r '.session_id // .id // .' > /tmp/chat-id
+
+      echo "CHAT_ID=$(cat /tmp/chat-id)"
+      echo "MR_URL=$MR_URL"
+    outputs:
+      chat: "$STDOUT"

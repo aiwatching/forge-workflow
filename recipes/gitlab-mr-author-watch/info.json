@@ -1,0 +1,10 @@
+{
+  "name": "gitlab-mr-author-watch",
+  "display_name": "GitLab MR auto-fix (all MRs I authored)",
+  "description": "Filter-based watch for all my open MRs. Auto-dispatches mr-review-fix when a reviewer adds a comment.",
+  "version": "0.1.0",
+  "author": "forge",
+  "tags": ["gitlab", "mr", "claude-code", "review", "auto", "author"],
+  "score": 0,
+  "rating": 0
+}
