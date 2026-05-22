@@ -49,7 +49,8 @@ nodes:
       echo "SOURCE_BRANCH={{input.source_branch}}"
       echo "TARGET_BRANCH={{input.target_branch}}"
     outputs:
-      context: "$STDOUT"
+      - name: context
+        extract: stdout
 
   fetch:
     worktree: false
@@ -84,7 +85,8 @@ nodes:
       echo "DIFF_B64=$(base64 < /tmp/mr-diff.json | tr -d '\n')"
       echo "NOTES_B64=$(base64 < /tmp/mr-notes.json | tr -d '\n')"
     outputs:
-      data: "$STDOUT"
+      - name: data
+        extract: stdout
 
   analyze:
     worktree: false
@@ -148,7 +150,8 @@ nodes:
         - If the diff is too large to fully assess, say so explicitly
           and list which files / functions you DID examine vs not.
     outputs:
-      report: "$STDOUT"
+      - name: report
+        extract: stdout
 
   post-comment:
     worktree: false
@@ -187,7 +190,8 @@ nodes:
       echo "POSTED=yes"
       echo "MR_URL=$MR_URL"
     outputs:
-      status: "$STDOUT"
+      - name: status
+        extract: stdout
 
   notify-chat:
     worktree: false
@@ -238,4 +242,5 @@ nodes:
       echo "CHAT_ID=$(cat /tmp/chat-id)"
       echo "MR_URL=$MR_URL"
     outputs:
-      chat: "$STDOUT"
+      - name: chat
+        extract: stdout

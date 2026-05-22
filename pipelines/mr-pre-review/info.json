@@ -2,7 +2,7 @@
   "name": "mr-pre-review",
   "display_name": "GitLab MR pre-review",
   "description": "Analyze diff + post '🤖 Forge pre-review:' comment + open Forge chat session for the human reviewer to decide approve/request-changes.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "forge",
   "tags": ["gitlab", "mr", "review"],
   "score": 0,

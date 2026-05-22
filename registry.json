@@ -134,7 +134,7 @@
       "name": "mr-pre-review",
       "display_name": "GitLab MR pre-review",
       "description": "Analyze + post pre-review comment + open Forge chat session.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": "forge",
       "tags": [
         "gitlab",
