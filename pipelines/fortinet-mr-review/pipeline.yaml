@@ -1,0 +1,493 @@
+name: fortinet-mr-review
+description: |
+  Single-shot Fortinet GitLab MR review responder. User provides
+  an MR URL; the pipeline reads all comments holistically, triages
+  per the user_prompt policy (act / skip / close / noop), optionally
+  pushes a fixup commit on the MR's source branch, replies on the
+  MR with a status note, and notifies Teams.
+
+  Fortinet-specific assumptions:
+    - glab CLI authenticated to the Fortinet GitLab host
+    - jq + python3 installed
+    - claude-code (CLI Claude) available for the fix step
+    - the project lives under projectRoots (so worktrees can be
+      opened on its repo)
+
+  Differs from mr-review-fix (the watch-driven sibling) only in:
+    - `user_prompt` replaces `triage_instructions` (with a baked-in
+      default — no need for a recipe to seed it)
+    - `mr_iid` / `gitlab_project_id` are marked `[auto from mr_url]`
+      so the Forge extension can hide them and derive both from a
+      single mr_url paste
+    - the triage prompt's inline fallback policy is removed (the
+      default now lives in `input.user_prompt`)
+
+version: "0.1.0"
+
+input:
+  project: "Local Forge project name (e.g. FortiNAC)"
+  mr_url: "Full GitLab MR URL"
+  mr_iid: "[auto from mr_url] GitLab MR iid"
+  gitlab_project_id: "[auto from mr_url] GitLab project — namespace/repo or numeric id"
+  user_prompt: |
+    ACT on any concrete code change request from a human reviewer
+    (missing cleanup, refactor with clear rationale, bug, missing
+    test, security concern) AND on 'error' findings from code
+    review bots.
+
+    SKIP approvals / lgtm / style-nits / questions / bot warnings
+    about MR metadata.
+
+    NOOP (do nothing, post no reply) when the latest non-system
+    comment was authored by Forge itself (body starts with
+    '🤖 Forge:') OR by the same GitLab user this Job runs as.
+    Nothing has changed since the last Forge run.
+
+    CLOSE only when reviewers explicitly call for abandonment
+    (duplicate MR, wrong approach, work superseded). Be
+    conservative — when in doubt, skip, never close.
+
+nodes:
+  # ── 1. Ingest — fetch MR metadata, all comments, the diff ──
+  #
+  # Sole source of truth for downstream nodes: source_branch,
+  # target_branch, comment history (json), the current diff.
+  # Written to /tmp/mr-<iid>-* so prompts stay small.
+  ingest:
+    project: "{{input.project}}"
+    worktree: false
+    mode: shell
+    prompt: |
+      set -e
+      PROJECT_ID="{{input.gitlab_project_id}}"
+      MR_IID="{{input.mr_iid}}"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
+      META=/tmp/mr-${MR_IID}-meta.json
+      NOTES=/tmp/mr-${MR_IID}-notes.json
+      DIFF=/tmp/mr-${MR_IID}-diff.txt
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" > "$META"
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes?per_page=100&sort=asc" > "$NOTES"
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/changes" \
+        | jq -r '.changes[] | "=== \(.new_path) ===\n\(.diff)"' > "$DIFF"
+      SRC=$(jq -r '.source_branch' "$META")
+      TGT=$(jq -r '.target_branch' "$META")
+      TITLE=$(jq -r '.title' "$META")
+      AUTHOR=$(jq -r '.author.username' "$META")
+      LATEST=$(jq -r '[.[] | select(.system == false)] | last.author.username // ""' "$NOTES")
+      echo "SOURCE_BRANCH=${SRC}"
+      echo "TARGET_BRANCH=${TGT}"
+      echo "MR_TITLE=${TITLE}"
+      echo "MR_AUTHOR=${AUTHOR}"
+      echo "LATEST_COMMENTER=${LATEST}"
+      echo "META_FILE=${META}"
+      echo "NOTES_FILE=${NOTES}"
+      echo "DIFF_FILE=${DIFF}"
+      TOTAL_NOTES=$(jq 'length' "$NOTES")
+      HUMAN_NOTES=$(jq '[.[] | select(.system == false)] | length' "$NOTES")
+      DIFF_LINES=$(wc -l < "$DIFF" | tr -d ' ')
+      echo ""
+      echo "=== RESULT ==="
+      echo "Fetched MR !${MR_IID} '${MR_TITLE}'"
+      echo "  branches:        ${SRC} → ${TGT}"
+      echo "  author:          @${AUTHOR}"
+      echo "  latest comment:  @${LATEST:-<none>}"
+      echo "  notes:           ${TOTAL_NOTES} total, ${HUMAN_NOTES} human (skipping ${TOTAL_NOTES} - ${HUMAN_NOTES} system)"
+      echo "  diff:            ${DIFF_LINES} lines"
+    outputs:
+      - name: ctx
+        extract: stdout
+
+  # ── 2. Triage — pure AI analysis (no shell, no worktree) ──
+  #
+  # Reads all notes + diff, decides ACT vs SKIP vs CLOSE vs NOOP
+  # per the user_prompt policy.
+  triage:
+    retries: 2
+    retry_delay_ms: 1500
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [ingest]
+    prompt: |
+      You're triaging review feedback on GitLab MR !{{input.mr_iid}}.
+      Read the FULL comment history and decide whether code changes
+      are warranted.
+
+      ## Triage policy (user-provided)
+      {{input.user_prompt}}
+
+      ## Context (from ingest)
+      Parse this KEY=value block:
+
+      ```
+      {{nodes.ingest.outputs.ctx}}
+      ```
+
+      You get paths to:
+        - NOTES_FILE — JSON array of ALL comments (latest at bottom).
+          Skip entries where `system: true`.
+        - DIFF_FILE  — current MR diff
+        - META_FILE  — full MR metadata
+      And: SOURCE_BRANCH, TARGET_BRANCH, MR_TITLE, MR_AUTHOR.
+
+      ## Your task
+      1. Read NOTES_FILE + DIFF_FILE.
+      2. Identify which comments are unaddressed (not already
+         resolved by later code/replies).
+      3. Decide ONE of FOUR actions per the policy above:
+         - `act`   The comments name a concrete, narrow code fix
+                   that should be applied. The MR itself is valid;
+                   it just needs more changes.
+         - `skip`  Substantive comments judged as not requiring
+                   code changes (genuine lgtm, approvals, questions,
+                   style nits). A reply WILL be posted explaining
+                   the decision.
+         - `close` The MR as a whole should NOT be merged. Pick
+                   this ONLY when the comments make it clear the
+                   work is invalid: duplicate of another MR, wrong
+                   approach, problem already fixed elsewhere,
+                   reviewer explicitly says abandon / supersede /
+                   close. Be conservative — when in doubt, skip,
+                   never close.
+         - `noop`  Nothing has changed since the last Forge run.
+                   Pick this when the LATEST non-system comment is
+                   from Forge itself (body starts with
+                   '🤖 Forge:') OR from the same GitLab user this
+                   Job runs as. NO reply will be posted, no label
+                   changed, no MR action taken — completely silent.
+      4. Write a `=== RESULT ===` block:
+         - 1-3 sentence summary of the situation
+         - List of unaddressed actionable comments (or "none")
+         - Your decision rationale (especially important for close)
+      5. End with EXACTLY one line on its own:
+            ACTION: act
+            ACTION: skip
+            ACTION: close
+            ACTION: noop
+
+      DO NOT edit files or run git in this step. The result block
+      gets posted verbatim on the MR by the reply step, so write
+      it in user-facing language.
+
+      Example shapes:
+      ```
+      === RESULT ===
+      Reviewer @alice asked us to add input validation to
+      `parseUrl()`. The current diff has no validation. Concrete,
+      narrow ask — actionable.
+
+      Unaddressed comments:
+        - @alice: add validation for malformed URLs
+
+      ACTION: act
+      ```
+
+      ```
+      === RESULT ===
+      @bob's comment is "lgtm 👍". No further changes requested.
+      The diff is clean and ready for merge.
+
+      ACTION: skip
+      ```
+
+      ```
+      === RESULT ===
+      @carol pointed out this MR duplicates !14600, which is
+      already merged into 7.6. Continuing with this MR would
+      re-introduce the same change. Recommend closing.
+
+      ACTION: close
+      ```
+
+      ```
+      === RESULT ===
+      The latest non-system comment is Forge's own auto-reply
+      from 2 minutes ago. No new external activity since the
+      previous run. Silent exit.
+
+      ACTION: noop
+      ```
+    outputs:
+      - name: reasoning
+        extract: result
+
+  # ── 3. Fix — only runs the work when triage said ACT ──
+  #
+  # SKIP/CLOSE/NOOP paths: emit a marker in ~1s, no git, no edits.
+  # ACT path: align worktree to origin/<source_branch>, edit,
+  # commit, push HEAD back to source_branch.
+  # Needs CLI Claude (claude-code) — API-only profiles can't git push.
+  fix:
+    retries: 2
+    retry_delay_ms: 1500
+    project: "{{input.project}}"
+    branch: "mr-{{input.mr_iid}}"
+    depends_on: [triage]
+    prompt: |
+      You're the FIX step. The TRIAGE step's full reply is:
+
+      ```
+      {{nodes.triage.outputs.reasoning}}
+      ```
+
+      ## First — check the decision
+      Triage outputs one of FOUR actions:
+        - `ACTION: act`    → continue to the ACT path below
+        - `ACTION: skip`   → no code change; reply step still posts
+        - `ACTION: close`  → no code change; reply step closes the MR
+        - `ACTION: noop`   → no code change; reply step posts nothing
+
+      For anything other than `ACTION: act`:
+        - Do NOT touch git, do NOT edit any file.
+        - Reply with ONE line literally matching the triage:
+            `FIX_RESULT: skipped`   (when triage said `skip`)
+            `FIX_RESULT: close`     (when triage said `close`)
+            `FIX_RESULT: noop`      (when triage said `noop`)
+            `FIX_RESULT: skipped`   (any unrecognized — safest)
+        - End.
+
+      If triage ended with `ACTION: act`, continue below.
+
+      ## ACT path
+
+      ### Context
+      Reuse the ingest output:
+
+      ```
+      {{nodes.ingest.outputs.ctx}}
+      ```
+
+      → SOURCE_BRANCH, NOTES_FILE, DIFF_FILE etc. The orchestrator
+      has opened a worktree on branch `mr-{{input.mr_iid}}` at
+      `$FORGE_WORKTREE`.
+
+      ### Steps
+      1. Align the worktree to origin/<source_branch>:
+           cd "$FORGE_WORKTREE"
+           git fetch origin "$SOURCE_BRANCH"
+           git reset --hard "origin/$SOURCE_BRANCH"
+      2. Re-read NOTES_FILE + DIFF_FILE.
+      3. Make ONLY the changes the actionable comments call for.
+         Stay narrow.
+      4. Commit + push to the MR's source branch:
+           git add -A
+           git commit -m "fix: address review feedback on !{{input.mr_iid}}"
+           git push origin "HEAD:$SOURCE_BRANCH"
+      5. Write a `=== RESULT ===` block (posted on the MR by reply
+         step — write in user-facing language):
+            - 1-3 sentence summary of what you changed
+            - Bulleted list of edited files + the gist of each change
+            - The commit SHA (output of `git rev-parse HEAD`)
+      6. End with EXACTLY one line on its own:
+            FIX_RESULT: pushed
+            FIX_RESULT: failed   (if git push or any step failed —
+                                  include the error in the result block)
+
+      Example shape:
+      ```
+      === RESULT ===
+      Added URL validation to `parseUrl()` per @alice's comment.
+
+      Files changed:
+        - src/parser.ts — added regex check before passing to URL()
+        - test/parser.test.ts — added 3 cases for malformed URLs
+
+      Commit: a1b2c3d
+
+      FIX_RESULT: pushed
+      ```
+    outputs:
+      - name: result
+        extract: result
+
+  # ── 4. Reply on the MR ──
+  reply:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [fix]
+    mode: shell
+    prompt: |
+      set -e
+      PROJECT_ID="{{input.gitlab_project_id}}"
+      MR_IID="{{input.mr_iid}}"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
+      INFO=$'{{nodes.ingest.outputs.ctx}}'
+      eval "$(echo "$INFO" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      TRIAGE=$(cat <<'FORGE_T_EOF'
+      {{nodes.triage.outputs.reasoning}}
+      FORGE_T_EOF
+      )
+      FIX=$(cat <<'FORGE_F_EOF'
+      {{nodes.fix.outputs.result}}
+      FORGE_F_EOF
+      )
+      if echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*noop([[:space:]]|$)'; then
+        # Silent path: triage determined nothing has changed since
+        # the last Forge run. Don't post a reply.
+        STATUS="noop"
+        echo "STATUS=noop"
+        echo "REPLY_POSTED=false"
+        echo "NOTE_ID="
+        echo "LABEL_RESULT=not changed"
+        echo "CLOSE_RESULT=not closed"
+        echo ""
+        echo "=== RESULT ==="
+        echo "MR !${MR_IID} noop — latest comment is from Forge or this Job's user. No reply posted, no labels changed."
+        exit 0
+      elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*pushed([[:space:]]|$)'; then
+        STATUS="pushed"
+        BODY="🤖 Forge: pushed a fixup commit addressing the review feedback.
+
+      **Triage:**
+      ${TRIAGE}
+
+      **Fix summary:**
+      ${FIX}"
+      elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*close([[:space:]]|$)'; then
+        STATUS="close"
+        BODY="🤖 Forge: this MR is being closed — the review concluded the work shouldn't be merged.
+
+      ${TRIAGE}"
+      elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*skipped([[:space:]]|$)'; then
+        STATUS="skipped"
+        BODY="🤖 Forge: reviewed the latest comments — **no code change needed**.
+
+      ${TRIAGE}"
+      elif echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*failed([[:space:]]|$)'; then
+        STATUS="failed"
+        BODY="⚠️ Forge: triage decided to fix but applying the change failed. Human attention required.
+
+      **Triage:**
+      ${TRIAGE}
+
+      **Failure:**
+      ${FIX}"
+      else
+        STATUS="unknown"
+        BODY="⚠️ Forge: fix step did not emit a FIX_RESULT marker. Human review required.
+
+      ${FIX}"
+      fi
+      NOTE_ID=$(glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes" \
+        -X POST -f body="$BODY" 2>/dev/null | jq -r '.id // empty') || NOTE_ID=""
+      if [ -n "$NOTE_ID" ]; then
+        REPLY_POSTED="true"
+      else
+        REPLY_POSTED="false"
+      fi
+
+      # Per-STATUS side-effects on the MR itself:
+      #   skipped → label forge:no-fix-needed
+      #   close   → label forge:no-merge + close the MR
+      #   pushed  → label forge:fix-applied
+      # All best-effort: missing labels return 4xx, we log + continue.
+      LABEL_RESULT="not changed"
+      CLOSE_RESULT="not closed"
+      case "$STATUS" in
+        skipped)
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "add_labels=forge:no-fix-needed" \
+               > /dev/null 2>&1; then
+            LABEL_RESULT="added forge:no-fix-needed"
+          else
+            LABEL_RESULT="failed to add forge:no-fix-needed (label may not exist in project)"
+          fi
+          ;;
+        close)
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "add_labels=forge:no-merge" \
+               > /dev/null 2>&1; then
+            LABEL_RESULT="added forge:no-merge"
+          else
+            LABEL_RESULT="failed to add forge:no-merge (label may not exist in project)"
+          fi
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "state_event=close" \
+               > /dev/null 2>&1; then
+            CLOSE_RESULT="MR closed"
+          else
+            CLOSE_RESULT="failed to close MR — check glab permissions"
+          fi
+          ;;
+        pushed)
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+               -X PUT -f "add_labels=forge:fix-applied" \
+               > /dev/null 2>&1; then
+            LABEL_RESULT="added forge:fix-applied"
+          else
+            LABEL_RESULT="failed to add forge:fix-applied (label may not exist in project)"
+          fi
+          ;;
+      esac
+
+      echo "STATUS=${STATUS}"
+      echo "REPLY_POSTED=${REPLY_POSTED}"
+      echo "NOTE_ID=${NOTE_ID}"
+      echo "LABEL_RESULT=${LABEL_RESULT}"
+      echo "CLOSE_RESULT=${CLOSE_RESULT}"
+      echo ""
+      echo "=== RESULT ==="
+      echo "MR !${MR_IID} reply: status=${STATUS}"
+      if [ -n "$NOTE_ID" ]; then
+        echo "  posted as note #${NOTE_ID}"
+      else
+        echo "  POST failed — see glab error above"
+      fi
+      echo "  Label: ${LABEL_RESULT}"
+      if [ "$STATUS" = "close" ]; then
+        echo "  Close: ${CLOSE_RESULT}"
+      fi
+    outputs:
+      - name: result
+        extract: stdout
+
+  # ── 5. Cleanup + Teams notify ──
+  cleanup:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [reply]
+    mode: shell
+    prompt: |
+      set +e
+      INFO=$'{{nodes.ingest.outputs.ctx}}'
+      eval "$(echo "$INFO" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      STATUS_OUT=$'{{nodes.reply.outputs.result}}'
+      eval "$(echo "$STATUS_OUT" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+
+      # Best-effort Teams ping — to the LATEST commenter (the person
+      # waiting on a response), falling back to MR author.
+      TARGET="${LATEST_COMMENTER:-$MR_AUTHOR}"
+      MSG="🤖 Forge handled MR review on \"${MR_TITLE}\" (status: ${STATUS:-?})
+
+      MR: {{input.mr_url}}"
+      PAYLOAD=$(jq -n --arg user "$TARGET" --arg msg "$MSG" \
+        '{plugin_id:"teams", tool:"send_message", input:{chat_name:$user, message:$msg}}')
+      if curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+           -H 'content-type: application/json' --data "$PAYLOAD" \
+           > /dev/null 2>&1; then
+        TEAMS_RESULT="notified @${TARGET}"
+      else
+        TEAMS_RESULT="skipped (connector unreachable or not configured)"
+      fi
+
+      # Remove worktree (only exists if ACT path ran)
+      ROOT=$(git rev-parse --show-toplevel)
+      WT="$ROOT/.forge/worktrees/mr-{{input.mr_iid}}"
+      if [ -d "$WT" ]; then
+        if git worktree remove --force "$WT" 2>/dev/null; then
+          WT_RESULT="removed $WT"
+        else
+          WT_RESULT="could NOT remove $WT (may hold uncommitted changes)"
+        fi
+      else
+        WT_RESULT="none (SKIP path — worktree was never created)"
+      fi
+      git worktree prune >/dev/null 2>&1
+      rm -f /tmp/mr-{{input.mr_iid}}-meta.json /tmp/mr-{{input.mr_iid}}-notes.json /tmp/mr-{{input.mr_iid}}-diff.txt
+      echo "=== RESULT ==="
+      echo "Pipeline outcome:    ${STATUS:-?}"
+      echo "Teams notification:  ${TEAMS_RESULT}"
+      echo "Worktree:            ${WT_RESULT}"
+      echo "Tmp files:           removed (/tmp/mr-{{input.mr_iid}}-*)"
+    outputs:
+      - name: status
+        extract: stdout
