@@ -107,7 +107,7 @@
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
       "description": "Triage: act/skip/close/noop. noop = silent exit when latest comment is Forge or this Job user \u2014 breaks self-reply loop.",
-      "version": "0.7.0",
+      "version": "0.7.1",
       "author": "forge",
       "tags": [
         "gitlab",
@@ -120,7 +120,7 @@
       "name": "mantis-bug-fix-and-mr",
       "display_name": "Mantis Bug Fix + MR",
       "description": "Mantis bug \u2192 fetch-all (incl. notes + history) \u2192 triage (ACT/SKIP semantic check) \u2192 fix-code \u2192 MR \u2192 resolution=fixed \u2192 bugnote (ref:autofix-<id>).",
-      "version": "0.6.3",
+      "version": "0.6.4",
       "author": "forge",
       "tags": [
         "mantis",

@@ -79,6 +79,8 @@ nodes:
   # Reads all notes + diff, decides ACT vs SKIP holistically.
   # Outputs reasoning + machine-readable `ACTION:` marker.
   triage:
+    retries: 2
+    retry_delay_ms: 1500
     project: "{{input.project}}"
     worktree: false
     depends_on: [ingest]
@@ -203,6 +205,8 @@ nodes:
   #            commit, push HEAD back to source_branch.
   # Needs CLI Claude (claude-code) — API-only profiles can't git push.
   fix:
+    retries: 2
+    retry_delay_ms: 1500
     project: "{{input.project}}"
     branch: "mr-{{input.mr_iid}}"
     depends_on: [triage]

@@ -296,6 +296,8 @@ nodes:
   # plus a structured reason block for downstream logging. Downstream
   # nodes grep for `ACTION: act` to decide whether to do real work.
   triage:
+    retries: 2
+    retry_delay_ms: 1500
     worktree: false
     project: "{{input.project}}"
     depends_on:
@@ -494,6 +496,8 @@ nodes:
       - name: attach
         extract: stdout
   fix-code:
+    retries: 2
+    retry_delay_ms: 1500
     project: "{{input.project}}"
     # cd into the worktree-setup-managed worktree. WITHOUT this Claude
     # runs in the orchestrator's default `pipeline/<id>` worktree (or
