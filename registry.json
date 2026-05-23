@@ -180,6 +180,52 @@
         "claude-code",
         "review"
       ]
+    },
+    {
+      "name": "fortinet-mantis-bug-fix",
+      "display_name": "Fortinet \u00b7 Mantis Bug Fix (single)",
+      "description": "Single-shot Fortinet Mantis bug \u2192 fix \u2192 MR pipeline. User provides a bug id + base branch; pipeline fetches Mantis context, has Claude propose a minimal fix per user_prompt focus, opens a GitLab MR via glab, notifies assignee + reporter on Teams. Copy of mantis-bug-fix-and-mr with user_prompt and baked-in defaults for MR/Teams templates.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "fortinet",
+        "mantis",
+        "gitlab",
+        "claude-code",
+        "fix",
+        "mr",
+        "single"
+      ]
+    },
+    {
+      "name": "fortinet-mr-pre-review",
+      "display_name": "Fortinet \u00b7 MR Pre-Review (single)",
+      "description": "Single-shot Fortinet GitLab MR pre-review. User provides an MR URL; pipeline fetches MR meta + diff + discussion, runs Claude analysis per user_prompt focus, posts a '\ud83e\udd16 Forge pre-review:' comment, and opens a Forge chat session for the human reviewer to drill into. Copy of mr-pre-review simplified for manual single runs.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "fortinet",
+        "gitlab",
+        "mr",
+        "review",
+        "pre-review",
+        "single"
+      ]
+    },
+    {
+      "name": "fortinet-mr-review",
+      "display_name": "Fortinet \u00b7 MR Review (single)",
+      "description": "Single-shot Fortinet GitLab MR review responder. User provides an MR URL; pipeline reads all comments + diff, triages (act/skip/close/noop) per user_prompt policy, optionally pushes a fixup commit, replies on the MR, and notifies Teams. Copy of mr-review-fix simplified for manual single runs.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "fortinet",
+        "gitlab",
+        "mr",
+        "claude-code",
+        "review",
+        "single"
+      ]
     }
   ]
 }
