@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.2.0"
+version: "0.2.1"
 
 input:
   project: "Local Forge project name (e.g. FortiNAC) — must match a directory under your Forge project roots"
@@ -41,21 +41,23 @@ input:
     the others in the MR description as "follow-ups" for the human
     reviewer to confirm.
   mr_body_template: |
-    Auto-fix for Mantis bug #{bug_id}.
+    ## Purpose
+    Fix Mantis bug #{bug_id} — {summary}
 
-    ## Summary
-    {summary}
+    ## Mantis
+    MANTIS-{bug_id}
 
-    ## Original description
+    ## Description
     {description}
 
-    ## Claude's fix notes
+    ## Technical Description
     {claude_summary}
 
     ## Files changed
     {diff_stat}
 
-    _Opened by Forge fortinet-mantis-bug-fix pipeline._
+    ## Testing Done
+    TBD — please verify in CI + smoke test.
   teams_message_template: |
     🤖 Forge auto-fix for Mantis #{bug_id} ({role}):
     {summary}
