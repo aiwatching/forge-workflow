@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-21",
+  "updated_at": "2026-05-22",
   "recipes": [
     {
       "name": "gitlab-mr-watch",
@@ -184,8 +184,8 @@
     {
       "name": "fortinet-mantis-bug-fix",
       "display_name": "Fortinet \u00b7 Mantis Bug Fix (single)",
-      "description": "Single-shot Fortinet Mantis bug \u2192 fix \u2192 MR pipeline. User provides a bug id + base branch; pipeline fetches Mantis context, has Claude propose a minimal fix per user_prompt focus, opens a GitLab MR via glab, notifies assignee + reporter on Teams. Copy of mantis-bug-fix-and-mr with user_prompt and baked-in defaults for MR/Teams templates.",
-      "version": "0.1.0",
+      "description": "Single-shot Fortinet Mantis bug \u2192 fix \u2192 MR pipeline. Input is just bug_id + project + base_branch + three editable prompts (focus / MR body / Teams message). Fetches summary/description/reporter/assignee/etc from Mantis at run time, has Claude propose a minimal fix, opens a GitLab MR via glab, notifies assignee + reporter on Teams.",
+      "version": "0.2.0",
       "author": "forge",
       "tags": [
         "fortinet",
