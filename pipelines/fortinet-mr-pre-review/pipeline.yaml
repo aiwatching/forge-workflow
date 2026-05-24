@@ -20,32 +20,53 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.1.0"
+version: "0.2.0"
 
 input:
-  project: "Local Forge project name (e.g. FortiNAC)"
-  mr_url: "Full GitLab MR URL"
-  mr_iid: "[auto from mr_url] GitLab MR iid"
-  gitlab_project_id: "[auto from mr_url] GitLab project — namespace/repo or numeric id"
-  user_prompt: |
-    Focus the review on:
-      - Correctness: does the change do what the description /
-        commit messages claim? Any obvious logic bugs?
-      - Tests: are new code paths covered? Any test removed
-        without justification?
-      - Security: input validation, authn/authz checks, secrets,
-        injection vectors.
-      - Backwards compatibility: API / schema / config changes
-        that could break existing callers.
-      - Code quality: dead code, unused imports, hard-coded paths,
-        TODO/FIXME left in.
+  project:
+    description: "Local Forge project name (e.g. FortiNAC)"
+    type: string
+    required: true
+    label: "Project"
+  mr_url:
+    description: "Full GitLab MR URL"
+    type: string
+    required: true
+    label: "MR URL"
+  mr_iid:
+    description: "[auto from mr_url] GitLab MR iid"
+    type: string
+    required: false
+    label: "MR iid"
+  gitlab_project_id:
+    description: "[auto from mr_url] GitLab project — namespace/repo or numeric id"
+    type: string
+    required: false
+    label: "GitLab project id"
+  user_prompt:
+    description: "Review focus guidance — what Claude should look for, what to avoid saying"
+    type: string
+    multiline: true
+    label: "Review focus prompt"
+    default: |
+      Focus the review on:
+        - Correctness: does the change do what the description /
+          commit messages claim? Any obvious logic bugs?
+        - Tests: are new code paths covered? Any test removed
+          without justification?
+        - Security: input validation, authn/authz checks, secrets,
+          injection vectors.
+        - Backwards compatibility: API / schema / config changes
+          that could break existing callers.
+        - Code quality: dead code, unused imports, hard-coded paths,
+          TODO/FIXME left in.
 
-    NEVER say 'approved' / 'lgtm' / 'rejected' in the reply — that's
-    the human reviewer's call. Stay neutral and informative.
+      NEVER say 'approved' / 'lgtm' / 'rejected' in the reply — that's
+      the human reviewer's call. Stay neutral and informative.
 
-    If the MR is draft / WIP, note that and lean toward verdict
-    'need-discussion'. If the diff is too large to fully assess,
-    say so and list which files / functions you DID examine.
+      If the MR is draft / WIP, note that and lean toward verdict
+      'need-discussion'. If the diff is too large to fully assess,
+      say so and list which files / functions you DID examine.
 
 nodes:
   # ── 1. Ingest — parse URL inputs + fetch all MR data via glab ──

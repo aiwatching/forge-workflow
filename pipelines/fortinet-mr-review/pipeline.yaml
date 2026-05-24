@@ -22,30 +22,51 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.1.0"
+version: "0.2.0"
 
 input:
-  project: "Local Forge project name (e.g. FortiNAC)"
-  mr_url: "Full GitLab MR URL"
-  mr_iid: "[auto from mr_url] GitLab MR iid"
-  gitlab_project_id: "[auto from mr_url] GitLab project — namespace/repo or numeric id"
-  user_prompt: |
-    ACT on any concrete code change request from a human reviewer
-    (missing cleanup, refactor with clear rationale, bug, missing
-    test, security concern) AND on 'error' findings from code
-    review bots.
+  project:
+    description: "Local Forge project name (e.g. FortiNAC)"
+    type: string
+    required: true
+    label: "Project"
+  mr_url:
+    description: "Full GitLab MR URL"
+    type: string
+    required: true
+    label: "MR URL"
+  mr_iid:
+    description: "[auto from mr_url] GitLab MR iid"
+    type: string
+    required: false
+    label: "MR iid"
+  gitlab_project_id:
+    description: "[auto from mr_url] GitLab project — namespace/repo or numeric id"
+    type: string
+    required: false
+    label: "GitLab project id"
+  user_prompt:
+    description: "Triage policy — when to act / skip / close / noop"
+    type: string
+    multiline: true
+    label: "Triage policy"
+    default: |
+      ACT on any concrete code change request from a human reviewer
+      (missing cleanup, refactor with clear rationale, bug, missing
+      test, security concern) AND on 'error' findings from code
+      review bots.
 
-    SKIP approvals / lgtm / style-nits / questions / bot warnings
-    about MR metadata.
+      SKIP approvals / lgtm / style-nits / questions / bot warnings
+      about MR metadata.
 
-    NOOP (do nothing, post no reply) when the latest non-system
-    comment was authored by Forge itself (body starts with
-    '🤖 Forge:') OR by the same GitLab user this Job runs as.
-    Nothing has changed since the last Forge run.
+      NOOP (do nothing, post no reply) when the latest non-system
+      comment was authored by Forge itself (body starts with
+      '🤖 Forge:') OR by the same GitLab user this Job runs as.
+      Nothing has changed since the last Forge run.
 
-    CLOSE only when reviewers explicitly call for abandonment
-    (duplicate MR, wrong approach, work superseded). Be
-    conservative — when in doubt, skip, never close.
+      CLOSE only when reviewers explicitly call for abandonment
+      (duplicate MR, wrong approach, work superseded). Be
+      conservative — when in doubt, skip, never close.
 
 nodes:
   # ── 1. Ingest — fetch MR metadata, all comments, the diff ──

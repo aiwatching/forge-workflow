@@ -19,50 +19,78 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.2.1"
+version: "0.3.0"
 
 input:
-  project: "Local Forge project name (e.g. FortiNAC) — must match a directory under your Forge project roots"
-  bug_id: "Mantis bug id (numeric; e.g. 1213844)"
-  base_branch: "Base branch Claude forks from (e.g. main, 7.6, release/7.6)"
-  user_prompt: |
-    Focus the fix on:
-      - Minimal change set — only what the bug describes; don't
-        opportunistically refactor adjacent code
-      - Add or update tests if a logical defect is fixed
-      - Keep style consistent with the surrounding file (don't
-        reformat untouched lines)
-      - If the bug is ambiguous or could mean several things, pick
-        the most conservative interpretation and call it out in
-        the MR description
-      - NEVER commit secrets, hard-coded paths, or temp logging
+  project:
+    description: "Local Forge project name (e.g. FortiNAC) — must match a directory under your Forge project roots"
+    type: string
+    required: true
+    label: "Project"
+  bug_id:
+    description: "Mantis bug id (numeric; e.g. 1213844)"
+    type: integer
+    required: true
+    label: "Bug ID"
+  base_branch:
+    description: "Base branch Claude forks from (e.g. main, 7.6, release/7.6)"
+    type: string
+    required: true
+    default: main
+    label: "Base branch"
+  user_prompt:
+    description: "Extra focus / constraint guidance appended to the Claude fix prompt"
+    type: string
+    multiline: true
+    label: "Fix focus prompt"
+    default: |
+      Focus the fix on:
+        - Minimal change set — only what the bug describes; don't
+          opportunistically refactor adjacent code
+        - Add or update tests if a logical defect is fixed
+        - Keep style consistent with the surrounding file (don't
+          reformat untouched lines)
+        - If the bug is ambiguous or could mean several things, pick
+          the most conservative interpretation and call it out in
+          the MR description
+        - NEVER commit secrets, hard-coded paths, or temp logging
 
-    If multiple files seem affected, fix the obvious one and list
-    the others in the MR description as "follow-ups" for the human
-    reviewer to confirm.
-  mr_body_template: |
-    ## Purpose
-    Fix Mantis bug #{bug_id} — {summary}
+      If multiple files seem affected, fix the obvious one and list
+      the others in the MR description as "follow-ups" for the human
+      reviewer to confirm.
+  mr_body_template:
+    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {description} {claude_summary} {diff_stat}"
+    type: string
+    multiline: true
+    label: "MR body template"
+    default: |
+      ## Purpose
+      Fix Mantis bug #{bug_id} — {summary}
 
-    ## Mantis
-    MANTIS-{bug_id}
+      ## Mantis
+      MANTIS-{bug_id}
 
-    ## Description
-    {description}
+      ## Description
+      {description}
 
-    ## Technical Description
-    {claude_summary}
+      ## Technical Description
+      {claude_summary}
 
-    ## Files changed
-    {diff_stat}
+      ## Files changed
+      {diff_stat}
 
-    ## Testing Done
-    TBD — please verify in CI + smoke test.
-  teams_message_template: |
-    🤖 Forge auto-fix for Mantis #{bug_id} ({role}):
-    {summary}
-    MR: {mr_url}
-    /cc @{who}
+      ## Testing Done
+      TBD — please verify in CI + smoke test.
+  teams_message_template:
+    description: "Teams notification template. Placeholders: {bug_id} {summary} {role} {mr_url} {who}"
+    type: string
+    multiline: true
+    label: "Teams message template"
+    default: |
+      🤖 Forge auto-fix for Mantis #{bug_id} ({role}):
+      {summary}
+      MR: {mr_url}
+      /cc @{who}
 
 nodes:
   resolve:
