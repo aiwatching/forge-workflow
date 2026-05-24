@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.2.2"
+version: "0.3.0"
 
 input:
   project:
@@ -236,8 +236,11 @@ nodes:
       # Unique heredoc marker so the LLM's analyze report can't terminate
       # the block early if it happens to write the literal string at
       # column 0 (rare but possible — markdown fences etc.).
+      # {{raw:...}} bypasses the engine's ANSI-C shell escape so the
+      # multi-line analyzer report keeps real newlines inside the
+      # quoted heredoc — otherwise the comment shows literal `\n`.
       cat > /tmp/analyze-report-${MR_IID} <<'__FORGE_REPORT_EOF_a93k__'
-      {{nodes.analyze.outputs.report}}
+      {{raw:nodes.analyze.outputs.report}}
       __FORGE_REPORT_EOF_a93k__
 
       # Quoted heredoc — disable shell expansion so Python sees the
@@ -307,28 +310,42 @@ nodes:
       INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
       eval "$(echo "$INGEST_CONTEXT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
 
-      cat > /tmp/seed-prompt-${MR_IID} <<EOF
-      # MR pre-review — ${MR_TITLE}
-
-      MR: ${MR_URL}
-      Author: @${AUTHOR}
-      Branch: ${SOURCE_BRANCH} → ${TARGET_BRANCH}
-
-      ─── Forge's analysis ───
-
-      {{nodes.analyze.outputs.report}}
-
-      ─── Next step ───
-
-      Forge has posted the REPLY DRAFT as a comment on the MR.
-      What do you want to do?
-        a) Approve the MR (run \`glab mr approve ${MR_IID}\` from the worktree)
-        b) Request changes (write a follow-up comment via \`glab mr note create\`)
-        c) Investigate further (ask me to look at specific files / behaviours)
-        d) Nothing — leave it as is
-
-      Pick a/b/c/d and I'll help.
-      EOF
+      # Build the seed prompt in Python — analyze report contains
+      # backticks / parens / quotes that an unquoted bash heredoc
+      # would try to evaluate as command substitution. Reads the
+      # report file written earlier by post-comment so we don't have
+      # to embed multi-line text in the Python source (risk: triple
+      # quotes in the report). Quoted heredoc (`<<'PY'`) keeps the
+      # Python literal; single-line scalars come in via env.
+      MR_TITLE_E="$MR_TITLE" MR_URL_E="$MR_URL" AUTHOR_E="$AUTHOR" \
+      SOURCE_BRANCH_E="$SOURCE_BRANCH" TARGET_BRANCH_E="$TARGET_BRANCH" \
+      MR_IID_E="$MR_IID" \
+      python3 - <<'PY' > /tmp/seed-prompt-${MR_IID}
+      import os
+      e = os.environ
+      with open(f"/tmp/analyze-report-{e['MR_IID_E']}") as f:
+          report = f.read().strip()
+      print(f"# MR pre-review — {e['MR_TITLE_E']}")
+      print()
+      print(f"MR: {e['MR_URL_E']}")
+      print(f"Author: @{e['AUTHOR_E']}")
+      print(f"Branch: {e['SOURCE_BRANCH_E']} → {e['TARGET_BRANCH_E']}")
+      print()
+      print("─── Forge's analysis ───")
+      print()
+      print(report)
+      print()
+      print("─── Next step ───")
+      print()
+      print("Forge has posted the REPLY DRAFT as a comment on the MR.")
+      print("What do you want to do?")
+      print(f"  a) Approve the MR (`glab mr approve {e['MR_IID_E']}` from the worktree)")
+      print("  b) Request changes (write a follow-up comment via `glab mr note create`)")
+      print("  c) Investigate further (ask me to look at specific files / behaviours)")
+      print("  d) Nothing — leave it as is")
+      print()
+      print("Pick a/b/c/d and I'll help.")
+      PY
 
       curl -sS -X POST http://127.0.0.1:8403/api/chat-proxy/sessions \
         -H 'content-type: application/json' \

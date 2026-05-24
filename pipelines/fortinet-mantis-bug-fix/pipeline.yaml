@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.3.0"
+version: "0.4.0"
 
 input:
   project:
@@ -783,7 +783,7 @@ nodes:
 
       SUMMARY=$(cat <<'FORGE_SUMMARY_EOF'
 
-      {{nodes.fix-code.outputs.summary}}
+      {{raw:nodes.fix-code.outputs.summary}}
 
       FORGE_SUMMARY_EOF
 

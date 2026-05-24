@@ -300,12 +300,14 @@ nodes:
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
       INFO=$'{{nodes.ingest.outputs.ctx}}'
       eval "$(echo "$INFO" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      # {{raw:...}} keeps real newlines inside the heredoc — without
+      # it the posted MR reply renders literal `\n` strings.
       TRIAGE=$(cat <<'FORGE_T_EOF'
-      {{nodes.triage.outputs.reasoning}}
+      {{raw:nodes.triage.outputs.reasoning}}
       FORGE_T_EOF
       )
       FIX=$(cat <<'FORGE_F_EOF'
-      {{nodes.fix.outputs.result}}
+      {{raw:nodes.fix.outputs.result}}
       FORGE_F_EOF
       )
       if echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*noop([[:space:]]|$)'; then

@@ -121,7 +121,7 @@
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
       "description": "GitLab MR review-feedback responder: a Claude triage step decides ACT vs SKIP per the user's plain-text triage_instructions, then (if ACT) checks out the source branch and pushes a fixup commit. Replaces the v0.1 regex/whitelist filter. Requires glab CLI authenticated.",
-      "version": "0.7.1",
+      "version": "0.7.2",
       "author": "forge",
       "tags": [
         "gitlab",
@@ -136,7 +136,7 @@
       "name": "mantis-bug-fix-and-mr",
       "display_name": "Mantis Bug Fix + MR",
       "description": "Fetch Mantis bug context \u2192 worktree \u2192 Claude proposes a fix \u2192 push branch \u2192 open GitLab MR via glab \u2192 notify assignee + reporter on Teams. Used by the mantis-bug-fix / mantis-bug-watch recipes.",
-      "version": "0.6.4",
+      "version": "0.6.5",
       "author": "forge",
       "tags": [
         "mantis",
@@ -211,7 +211,7 @@
       "name": "fortinet-mantis-bug-fix",
       "display_name": "Fortinet \u00b7 Mantis Bug Fix (single)",
       "description": "Single-shot Fortinet Mantis bug \u2192 fix \u2192 MR pipeline. Input is just bug_id + project + base_branch + three editable prompts (focus / MR body / Teams message). Fetches summary/description/reporter/assignee/etc from Mantis at run time, has Claude propose a minimal fix, opens a GitLab MR via glab, notifies assignee + reporter on Teams.",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "author": "forge",
       "tags": [
         "fortinet",
@@ -229,7 +229,7 @@
       "name": "fortinet-mr-pre-review",
       "display_name": "Fortinet \u00b7 MR Pre-Review (single)",
       "description": "Single-shot Fortinet GitLab MR pre-review. User provides an MR URL; pipeline fetches MR meta + diff + discussion, runs Claude analysis per user_prompt focus, posts a '\ud83e\udd16 Forge pre-review:' comment, and opens a Forge chat session for the human reviewer to drill into. Copy of mr-pre-review simplified for manual single runs.",
-      "version": "0.2.2",
+      "version": "0.3.0",
       "author": "forge",
       "tags": [
         "fortinet",
@@ -246,7 +246,7 @@
       "name": "fortinet-mr-review",
       "display_name": "Fortinet \u00b7 MR Review (single)",
       "description": "Single-shot Fortinet GitLab MR review responder. User provides an MR URL; pipeline reads all comments + diff, triages (act/skip/close/noop) per user_prompt policy, optionally pushes a fixup commit, replies on the MR, and notifies Teams. Copy of mr-review-fix simplified for manual single runs.",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": "forge",
       "tags": [
         "fortinet",

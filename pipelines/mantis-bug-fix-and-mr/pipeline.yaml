@@ -691,7 +691,7 @@ nodes:
 
       SUMMARY=$(cat <<'FORGE_SUMMARY_EOF'
 
-      {{nodes.fix-code.outputs.summary}}
+      {{raw:nodes.fix-code.outputs.summary}}
 
       FORGE_SUMMARY_EOF
 
