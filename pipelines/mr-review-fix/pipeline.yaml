@@ -205,8 +205,11 @@ nodes:
   #            commit, push HEAD back to source_branch.
   # Needs CLI Claude (claude-code) — API-only profiles can't git push.
   fix:
-    retries: 2
-    retry_delay_ms: 1500
+    # Claude CLI sometimes exits with a "require is not defined" on
+    # stderr during early startup — bump retries + backoff to ride
+    # over the race.
+    retries: 5
+    retry_delay_ms: 5000
     project: "{{input.project}}"
     branch: "mr-{{input.mr_iid}}"
     depends_on: [triage]

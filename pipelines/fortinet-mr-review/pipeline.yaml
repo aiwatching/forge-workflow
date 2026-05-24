@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.3.1"
+version: "0.3.2"
 
 input:
   project:
@@ -238,8 +238,12 @@ nodes:
   # commit, push HEAD back to source_branch.
   # Needs CLI Claude (claude-code) — API-only profiles can't git push.
   fix:
-    retries: 2
-    retry_delay_ms: 1500
+    # Claude CLI sometimes exits with a "require is not defined" on
+    # stderr during early startup (intermittent, observed across
+    # several iter:N retries on the same task). Higher retries + a
+    # longer backoff than the default usually rides over it.
+    retries: 5
+    retry_delay_ms: 5000
     project: "{{input.project}}"
     branch: "mr-{{input.mr_iid}}"
     depends_on: [triage]

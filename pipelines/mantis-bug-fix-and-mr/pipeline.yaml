@@ -496,8 +496,11 @@ nodes:
       - name: attach
         extract: stdout
   fix-code:
-    retries: 2
-    retry_delay_ms: 1500
+    # Claude CLI sometimes exits with a "require is not defined" on
+    # stderr during early startup — bump retries + backoff to ride
+    # over the race.
+    retries: 5
+    retry_delay_ms: 5000
     project: "{{input.project}}"
     # cd into the worktree-setup-managed worktree. WITHOUT this Claude
     # runs in the orchestrator's default `pipeline/<id>` worktree (or
