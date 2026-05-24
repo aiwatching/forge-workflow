@@ -5,7 +5,7 @@
     {
       "name": "gitlab-mr-watch",
       "display_name": "GitLab MR auto-fix (single MR)",
-      "description": "Per-MR watcher. Default triage policy covers act/skip/close/noop \u2014 noop breaks the self-reply loop.",
+      "description": "Watch new comments on a specific GitLab MR. Each new review note dispatches the mr-review-fix pipeline \u2014 Claude reads the comment + the current MR diff, edits files in the matching local project, and pushes a fixup commit.",
       "version": "0.6.0",
       "author": "forge",
       "tags": [
@@ -13,12 +13,14 @@
         "mr",
         "claude-code",
         "review"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "gitlab-my-mrs-watch",
       "display_name": "GitLab \u2014 watch ALL my MRs for review feedback",
-      "description": "Auto-monitor every open MR you authored across all GitLab projects via Todos API. No per-MR setup.",
+      "description": "Auto-monitor every open MR you authored across all GitLab projects. Each new review comment dispatches mr-review-fix to the local project \u2014 no per-MR setup.",
       "version": "0.3.0",
       "author": "forge",
       "tags": [
@@ -27,12 +29,14 @@
         "claude-code",
         "review",
         "auto"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "mantis-bug-fix",
       "display_name": "Mantis \u2014 fix one bug by id",
-      "description": "Manual one-shot fix for a single Mantis bug; press Fire when ready.",
+      "description": "Manual / one-shot: fix a single Mantis bug. Press Fire when you're ready; Claude takes it from there. For continuous polling, use mantis-bug-watch.",
       "version": "0.1.0",
       "author": "forge",
       "tags": [
@@ -41,12 +45,14 @@
         "bug",
         "fix",
         "manual"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "mantis-bug-watch",
       "display_name": "Mantis \u2014 auto-fix bugs by filter",
-      "description": "Watch Mantis filter with source + keyword + resolution=open filters.",
+      "description": "Continuously poll Mantis with a filter (status / assignee / fix_schedule / project). New matches dispatch mantis-bug-fix-and-mr. Dedup by bug id.",
       "version": "0.5.0",
       "author": "forge",
       "tags": [
@@ -55,12 +61,14 @@
         "bug",
         "fix",
         "auto"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "mantis-bug-fix-batch",
       "display_name": "Mantis \u2014 fix many bugs by id list",
-      "description": "Paste comma-separated bug ids \u2192 one mantis-bug-fix-and-mr pipeline per id. Uses inline source \u2014 no connector round-trip.",
+      "description": "Hand-picked batch fixer: paste a comma-separated list of Mantis bug ids, Fire once, get one mantis-bug-fix-and-mr pipeline per id. Per-Job max_per_tick caps concurrency.",
       "version": "0.2.0",
       "author": "forge",
       "tags": [
@@ -70,12 +78,14 @@
         "fix",
         "manual",
         "batch"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "gitlab-mr-author-watch",
       "display_name": "GitLab MR auto-fix (all MRs I authored)",
-      "description": "Filter watch for my open MRs \u2192 mr-review-fix when comments change.",
+      "description": "Filter-based watch for all my open MRs. Auto-dispatches mr-review-fix when a reviewer adds a comment.",
       "version": "0.1.0",
       "author": "forge",
       "tags": [
@@ -85,12 +95,14 @@
         "review",
         "auto",
         "author"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "gitlab-mr-reviewer-watch",
       "display_name": "GitLab MR pre-review (MRs assigned to me to review)",
-      "description": "Filter watch via search_mrs(reviewer_username) \u2014 accurately matches MRs awaiting MY review. Each new assignment \u2192 mr-pre-review pipeline.",
+      "description": "Filter-based watch for MRs assigned to me as reviewer. Runs mr-pre-review pipeline (analyze + post comment + open Forge chat session).",
       "version": "0.2.0",
       "author": "forge",
       "tags": [
@@ -99,14 +111,16 @@
         "claude-code",
         "review",
         "reviewer"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     }
   ],
   "pipelines": [
     {
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
-      "description": "Triage: act/skip/close/noop. noop = silent exit when latest comment is Forge or this Job user \u2014 breaks self-reply loop.",
+      "description": "GitLab MR review-feedback responder: a Claude triage step decides ACT vs SKIP per the user's plain-text triage_instructions, then (if ACT) checks out the source branch and pushes a fixup commit. Replaces the v0.1 regex/whitelist filter. Requires glab CLI authenticated.",
       "version": "0.7.1",
       "author": "forge",
       "tags": [
@@ -114,12 +128,14 @@
         "mr",
         "claude-code",
         "review"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "mantis-bug-fix-and-mr",
       "display_name": "Mantis Bug Fix + MR",
-      "description": "Mantis bug \u2192 fetch-all (incl. notes + history) \u2192 triage (ACT/SKIP semantic check) \u2192 fix-code \u2192 MR \u2192 resolution=fixed \u2192 bugnote (ref:autofix-<id>).",
+      "description": "Fetch Mantis bug context \u2192 worktree \u2192 Claude proposes a fix \u2192 push branch \u2192 open GitLab MR via glab \u2192 notify assignee + reporter on Teams. Used by the mantis-bug-fix / mantis-bug-watch recipes.",
       "version": "0.6.4",
       "author": "forge",
       "tags": [
@@ -128,24 +144,28 @@
         "claude-code",
         "fix",
         "mr"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "mr-pre-review",
       "display_name": "GitLab MR pre-review",
-      "description": "Analyze + post pre-review comment + open Forge chat session.",
+      "description": "Analyze diff + post '\ud83e\udd16 Forge pre-review:' comment + open Forge chat session for the human reviewer to decide approve/request-changes.",
       "version": "0.1.1",
       "author": "forge",
       "tags": [
         "gitlab",
         "mr",
         "review"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "issue-fix-and-review",
       "display_name": "GitHub Issue \u2192 Fix \u2192 PR \u2192 Review",
-      "description": "Fetch GitHub issue \u2192 Claude proposes fix \u2192 push + open PR \u2192 AI review.",
+      "description": "Fetch GitHub issue \u2192 Claude proposes fix \u2192 push branch + open PR \u2192 AI code review.",
       "version": "0.1.0",
       "author": "forge",
       "tags": [
@@ -154,24 +174,28 @@
         "claude-code",
         "review",
         "auto"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "multi-agent-collaboration",
-      "display_name": "Multi-agent collaboration (demo)",
-      "description": "Two-agent conversation: architect designs, implementer codes. Demo template.",
+      "display_name": "Multi-agent collaboration (architect + implementer demo)",
+      "description": "Two-agent conversation: architect designs, implementer codes. Demo / template for custom multi-agent flows.",
       "version": "0.1.0",
       "author": "forge",
       "tags": [
         "multi-agent",
         "claude-code",
         "demo"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "review-mr",
       "display_name": "GitHub PR review (AI comment)",
-      "description": "GitHub PR auto-review: fetch diff \u2192 analyze \u2192 post review comment via gh.",
+      "description": "GitHub PR auto-review: fetch diff \u2192 analyze \u2192 post markdown review comment via gh. Use mr-review-fix for GitLab MRs.",
       "version": "0.1.0",
       "author": "forge",
       "tags": [
@@ -179,7 +203,9 @@
         "pr",
         "claude-code",
         "review"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "fortinet-mantis-bug-fix",
@@ -195,7 +221,9 @@
         "fix",
         "mr",
         "single"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "fortinet-mr-pre-review",
@@ -210,7 +238,9 @@
         "review",
         "pre-review",
         "single"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     },
     {
       "name": "fortinet-mr-review",
@@ -225,7 +255,9 @@
         "claude-code",
         "review",
         "single"
-      ]
+      ],
+      "score": 0,
+      "rating": 0
     }
   ]
 }

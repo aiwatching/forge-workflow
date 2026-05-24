@@ -1,0 +1,19 @@
+name: registry-check
+on:
+  push:
+  pull_request:
+
+# Fails CI when:
+#   - registry.json is out of sync with info.json files, OR
+#   - any pipeline.yaml/recipe.yaml `version:` differs from the
+#     matching info.json `version` (yaml is what Forge runs at
+#     dispatch time; info.json is what the marketplace shows)
+jobs:
+  registry-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: python3 tools/build_registry.py --check

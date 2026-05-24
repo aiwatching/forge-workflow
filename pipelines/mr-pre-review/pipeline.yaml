@@ -20,7 +20,7 @@ description: |
 #   - jq installed
 #   - The fetch + analyse node use a chat-capable agent (any profile).
 
-version: "0.1.0"
+version: "0.1.1"
 
 input:
   project: "Local Forge project name (e.g. FortiNAC)"

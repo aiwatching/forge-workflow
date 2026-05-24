@@ -18,6 +18,21 @@ forge-workflow/
       info.json
 ```
 
+## Bumping a recipe or pipeline
+
+`registry.json` must stay in sync with every `info.json`. The helper
+does the rebuild; CI rejects PRs with drift.
+
+```bash
+python3 tools/build_registry.py            # rebuild from info.json files
+python3 tools/build_registry.py --check    # exits non-zero on drift
+```
+
+The script also warns when `pipeline.yaml`'s `version:` doesn't match
+its sibling `info.json` (yaml = what Forge runs at dispatch time,
+info.json = what the marketplace lists — they need to agree or users
+install the "v0.6.0" they see but actually run "v0.5.0").
+
 ## Concepts
 
 - **Recipe** = a one-form template that turns 2–4 user-filled fields
