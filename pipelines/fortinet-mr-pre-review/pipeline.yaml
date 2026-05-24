@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.2.0"
+version: "0.2.1"
 
 input:
   project:
@@ -170,7 +170,8 @@ nodes:
       these to decode:
 
       ```
-      eval "$(echo '{{nodes.ingest.outputs.context}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      CTX=$'{{nodes.ingest.outputs.context}}'
+      eval "$(echo "$CTX" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
       echo "$META_B64"  | base64 -d
       echo "$DIFF_B64"  | base64 -d
       echo "$NOTES_B64" | base64 -d
@@ -225,11 +226,19 @@ nodes:
     mode: shell
     prompt: |
       set -e
-      eval "$(echo '{{nodes.ingest.outputs.context}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      # ANSI-C `$'...'` quoting — engine escapes the substituted multi-
+      # line context (apostrophes, backslashes, newlines) so the eval
+      # below stays a single-line command. Plain `'...'` broke on MR
+      # titles / branch names containing a `'`.
+      INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
+      eval "$(echo "$INGEST_CONTEXT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
 
-      cat > /tmp/analyze-report-${MR_IID} <<'REPORT_EOF'
+      # Unique heredoc marker so the LLM's analyze report can't terminate
+      # the block early if it happens to write the literal string at
+      # column 0 (rare but possible — markdown fences etc.).
+      cat > /tmp/analyze-report-${MR_IID} <<'__FORGE_REPORT_EOF_a93k__'
       {{nodes.analyze.outputs.report}}
-      REPORT_EOF
+      __FORGE_REPORT_EOF_a93k__
 
       python3 - <<PY > /tmp/reply-body-${MR_IID}
       import re, sys
@@ -276,7 +285,9 @@ nodes:
     mode: shell
     prompt: |
       set -e
-      eval "$(echo '{{nodes.ingest.outputs.context}}' | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      # See post-comment node — same `$'...'` ANSI-C quoting reason.
+      INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
+      eval "$(echo "$INGEST_CONTEXT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
 
       cat > /tmp/seed-prompt-${MR_IID} <<EOF
       # MR pre-review — ${MR_TITLE}
