@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.2.1"
+version: "0.2.2"
 
 input:
   project:
@@ -240,15 +240,33 @@ nodes:
       {{nodes.analyze.outputs.report}}
       __FORGE_REPORT_EOF_a93k__
 
-      python3 - <<PY > /tmp/reply-body-${MR_IID}
-      import re, sys
-      with open('/tmp/analyze-report-${MR_IID}') as f:
-          text = f.read()
+      # Quoted heredoc — disable shell expansion so Python sees the
+      # script literally. Pass MR_IID via env instead of ${MR_IID}.
+      MR_IID="$MR_IID" python3 - <<'PY' > /tmp/reply-body-${MR_IID}
+      import os, re
+      mr_iid = os.environ["MR_IID"]
+      with open(f"/tmp/analyze-report-{mr_iid}") as f:
+          text = f.read().strip()
       m = re.search(r'─── REPLY DRAFT ───\s*\n(.+)', text, re.DOTALL)
-      body = m.group(1).strip() if m else "(Forge pre-review: analysis output malformed — see Job log.)"
       print("🤖 Forge pre-review:")
       print()
-      print(body)
+      if m:
+          print(m.group(1).strip())
+      else:
+          # Analyze step didn't produce the expected REPLY DRAFT marker.
+          # Don't silently swallow — surface the raw analysis so the
+          # reviewer has SOMETHING actionable instead of "see log".
+          # Cap the dump so a runaway analysis can't blow up the MR.
+          MAX = 6000
+          dump = text if len(text) <= MAX else text[:MAX] + f"\n\n…truncated, full length {len(text)} chars"
+          print("_Analyzer did not produce the expected `REPLY DRAFT` section. Raw output below — pasting verbatim so the reviewer doesn't lose context._")
+          print()
+          print("<details><summary>Raw analyzer output</summary>")
+          print()
+          print("```")
+          print(dump)
+          print("```")
+          print("</details>")
       PY
 
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$GITLAB_PROJECT_ID")
