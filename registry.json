@@ -121,7 +121,7 @@
       "name": "mr-review-fix",
       "display_name": "MR Review Fix",
       "description": "GitLab MR review-feedback responder: a Claude triage step decides ACT vs SKIP per the user's plain-text triage_instructions, then (if ACT) checks out the source branch and pushes a fixup commit. Replaces the v0.1 regex/whitelist filter. Requires glab CLI authenticated.",
-      "version": "0.7.2",
+      "version": "0.7.3",
       "author": "forge",
       "tags": [
         "gitlab",
@@ -246,7 +246,7 @@
       "name": "fortinet-mr-review",
       "display_name": "Fortinet \u00b7 MR Review (single)",
       "description": "Single-shot Fortinet GitLab MR review responder. User provides an MR URL; pipeline reads all comments + diff, triages (act/skip/close/noop) per user_prompt policy, optionally pushes a fixup commit, replies on the MR, and notifies Teams. Copy of mr-review-fix simplified for manual single runs.",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "author": "forge",
       "tags": [
         "fortinet",
