@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.3.0"
+version: "0.3.1"
 
 input:
   project:
@@ -199,10 +199,12 @@ nodes:
        bullet list. If none, write "(none)".>
 
       ─── REPLY DRAFT ───
-      <markdown body that will be posted to GitLab as the
-       '🤖 Forge pre-review:' comment. Should be terse, useful,
-       no rubber-stamp. NEVER say 'approved' / 'lgtm' / 'rejected' —
-       leave the verdict to the human. ≤ 400 words.>
+      <markdown body that will be posted to GitLab as the comment
+       body. DO NOT include the '🤖 Forge pre-review:' header — the
+       post step prepends it. Start directly with the analysis prose.
+       Should be terse, useful, no rubber-stamp. NEVER say 'approved'
+       / 'lgtm' / 'rejected' — leave the verdict to the human.
+       ≤ 400 words.>
       ```
 
       Rules:
@@ -254,7 +256,11 @@ nodes:
       print("🤖 Forge pre-review:")
       print()
       if m:
-          print(m.group(1).strip())
+          body = m.group(1).strip()
+          # Defensive: if Claude still includes the '🤖 Forge pre-review:'
+          # header (older prompts asked for it), strip it so we don't double up.
+          body = re.sub(r'^[ \t]*🤖[ \t]*Forge pre-review:[ \t]*\n+', '', body)
+          print(body)
       else:
           # Analyze step didn't produce the expected REPLY DRAFT marker.
           # Don't silently swallow — surface the raw analysis so the
