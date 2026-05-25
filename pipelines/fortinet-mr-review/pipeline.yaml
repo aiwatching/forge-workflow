@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.4.0"
+version: "0.4.1"
 
 input:
   project:
@@ -336,7 +336,7 @@ nodes:
       MR_IID="{{input.mr_iid}}"
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
       INFO=$'{{nodes.ingest.outputs.ctx}}'
-      eval "$(echo "$INFO" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
       # {{raw:...}} keeps real newlines in the heredoc.
       # Long unique markers + write-to-file (not the `$(cat <<EOF…EOF)`
       # form): if the LLM happens to write `FORGE_T_EOF` on a line of
@@ -497,9 +497,9 @@ nodes:
     prompt: |
       set +e
       INFO=$'{{nodes.ingest.outputs.ctx}}'
-      eval "$(echo "$INFO" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
       STATUS_OUT=$'{{nodes.reply.outputs.result}}'
-      eval "$(echo "$STATUS_OUT" | grep -E '^[A-Z_]+=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$STATUS_OUT"
 
       # Best-effort Teams ping — to the LATEST commenter (the person
       # waiting on a response), falling back to MR author.
