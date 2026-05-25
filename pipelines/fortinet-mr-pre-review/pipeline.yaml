@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.5.0"
+version: "0.5.1"
 
 input:
   project:
@@ -189,7 +189,7 @@ nodes:
 
       ```
       CTX=$'{{nodes.ingest.outputs.context}}'
-      eval "$(echo "$CTX" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$CTX"
       echo "$META_B64"  | base64 -d
       echo "$DIFF_B64"  | base64 -d
       echo "$NOTES_B64" | base64 -d
@@ -260,7 +260,7 @@ nodes:
       # below stays a single-line command. Plain `'...'` broke on MR
       # titles / branch names containing a `'`.
       INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
-      eval "$(echo "$INGEST_CONTEXT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INGEST_CONTEXT"
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$GITLAB_PROJECT_ID")
 
       # Skip path: no changes since last Forge pre-review. Don't repost,
@@ -371,7 +371,7 @@ nodes:
       set -e
       # See post-comment node — same `$'...'` ANSI-C quoting reason.
       INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
-      eval "$(echo "$INGEST_CONTEXT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INGEST_CONTEXT"
 
       # Skip path: just write a one-liner seed and open chat.
       if [ "${SKIP_PRE_REVIEW:-no}" = "yes" ]; then
