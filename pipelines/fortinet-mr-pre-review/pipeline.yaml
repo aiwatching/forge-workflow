@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.4.0"
+version: "0.5.0"
 
 input:
   project:
@@ -124,6 +124,30 @@ nodes:
       CHANGES_COUNT=$(jq -r '.changes | length' /tmp/mr-pre-${MR_IID}-diff.json)
       NOTES_COUNT=$(jq -r 'length' /tmp/mr-pre-${MR_IID}-notes.json)
 
+      # ── Skip detection: don't re-post if nothing changed since
+      #    the last Forge pre-review comment.
+      LAST_FORGE_TS=$(jq -r \
+        '[.[] | select(.body | startswith("🤖 Forge pre-review:"))] | sort_by(.created_at) | last | .created_at // ""' \
+        /tmp/mr-pre-${MR_IID}-notes.json)
+      SKIP_PRE_REVIEW=no
+      SKIP_REASON=""
+      if [ -n "$LAST_FORGE_TS" ]; then
+        # Count non-forge notes after LAST_FORGE_TS
+        NEW_NOTES_COUNT=$(jq -r --arg ts "$LAST_FORGE_TS" \
+          '[.[] | select(.created_at > $ts and ((.body // "") | startswith("🤖 Forge pre-review:") | not))] | length' \
+          /tmp/mr-pre-${MR_IID}-notes.json)
+        # Count commits after LAST_FORGE_TS (server-side time compare)
+        NEW_COMMITS_COUNT=$(glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/commits?per_page=100" 2>/dev/null \
+          | jq -r --arg ts "$LAST_FORGE_TS" '[.[] | select(.created_at > $ts)] | length')
+        if [ "${NEW_NOTES_COUNT:-0}" = "0" ] && [ "${NEW_COMMITS_COUNT:-0}" = "0" ]; then
+          SKIP_PRE_REVIEW=yes
+          SKIP_REASON="prior Forge pre-review at ${LAST_FORGE_TS}; no new commits or non-forge comments since"
+        fi
+      fi
+      echo "SKIP_PRE_REVIEW=${SKIP_PRE_REVIEW}"
+      echo "SKIP_REASON=${SKIP_REASON}"
+      echo "LAST_FORGE_TS=${LAST_FORGE_TS}"
+
       echo ""
       echo "=== RESULT ==="
       echo "Fetched MR !${MR_IID} '${TITLE}'"
@@ -133,6 +157,9 @@ nodes:
       echo "  state:           ${STATE}${DRAFT:+ (draft)}"
       echo "  changed files:   ${CHANGES_COUNT}"
       echo "  existing notes:  ${NOTES_COUNT}"
+      if [ "$SKIP_PRE_REVIEW" = "yes" ]; then
+        echo "  → SKIP analyze/post: ${SKIP_REASON}"
+      fi
     outputs:
       - name: context
         extract: stdout
@@ -166,6 +193,23 @@ nodes:
       echo "$META_B64"  | base64 -d
       echo "$DIFF_B64"  | base64 -d
       echo "$NOTES_B64" | base64 -d
+      ```
+
+      ## Skip path
+
+      If `SKIP_PRE_REVIEW=yes` in the decoded vars above, the MR
+      has had no changes since the last Forge pre-review. Output
+      EXACTLY this and stop — no real analysis needed:
+
+      ```
+      ─── VERDICT ───
+      ready-to-merge
+
+      ─── FINDINGS ───
+      (skipped — no commits / new comments since last Forge pre-review)
+
+      ─── REPLY DRAFT ───
+      (skipped)
       ```
 
       ## What to produce
@@ -217,6 +261,21 @@ nodes:
       # titles / branch names containing a `'`.
       INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
       eval "$(echo "$INGEST_CONTEXT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$GITLAB_PROJECT_ID")
+
+      # Skip path: no changes since last Forge pre-review. Don't repost,
+      # don't touch labels — just log + exit clean so the chat seed
+      # can show "skipped".
+      if [ "${SKIP_PRE_REVIEW:-no}" = "yes" ]; then
+        echo "POSTED=skipped"
+        echo "NOTE_ID="
+        echo "MR_URL=${MR_URL}"
+        echo "STAGE_LABEL=unchanged"
+        echo ""
+        echo "=== RESULT ==="
+        echo "Skipped — ${SKIP_REASON:-no changes since prior pre-review}"
+        exit 0
+      fi
 
       # Unique heredoc marker so the LLM's analyze report can't terminate
       # the block early if it happens to write the literal string at
@@ -261,7 +320,6 @@ nodes:
           print("</details>")
       PY
 
-      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$GITLAB_PROJECT_ID")
       NOTE_ID=$(glab api -X POST \
         "projects/${PID_ENC}/merge_requests/${MR_IID}/notes" \
         --field "body=$(cat /tmp/reply-body-${MR_IID})" \
@@ -273,13 +331,29 @@ nodes:
         POSTED="failed"
       fi
 
+      # Stage label: forge:stage/pre-reviewed (mutually exclusive with
+      # the other forge:stage/* labels). Best-effort.
+      STAGE_LABEL="not set"
+      if [ "$POSTED" = "yes" ]; then
+        if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+             -f "add_labels=forge:stage/pre-reviewed" \
+             -f "remove_labels=forge:stage/needs-review,forge:stage/reviewed" \
+             > /dev/null 2>&1; then
+          STAGE_LABEL="forge:stage/pre-reviewed"
+        else
+          STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
+        fi
+      fi
+
       echo "POSTED=${POSTED}"
       echo "NOTE_ID=${NOTE_ID}"
       echo "MR_URL=${MR_URL}"
+      echo "STAGE_LABEL=${STAGE_LABEL}"
       echo ""
       echo "=== RESULT ==="
       if [ "$POSTED" = "yes" ]; then
         echo "Posted pre-review comment as note #${NOTE_ID} on ${MR_URL}"
+        echo "Stage label: ${STAGE_LABEL}"
       else
         echo "POST failed — see glab error above. Comment NOT posted."
       fi
@@ -298,6 +372,34 @@ nodes:
       # See post-comment node — same `$'...'` ANSI-C quoting reason.
       INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
       eval "$(echo "$INGEST_CONTEXT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+
+      # Skip path: just write a one-liner seed and open chat.
+      if [ "${SKIP_PRE_REVIEW:-no}" = "yes" ]; then
+        cat > /tmp/seed-prompt-${MR_IID} <<EOF
+      # MR pre-review — ${MR_TITLE}
+
+      MR: ${MR_URL}
+
+      No new commits or non-Forge comments since the last Forge pre-review
+      (${LAST_FORGE_TS:-unknown}). Skipped — nothing to re-post.
+      EOF
+        curl -sS -X POST http://127.0.0.1:8403/api/chat-proxy/sessions \
+          -H 'content-type: application/json' \
+          --data "$(jq -nc \
+            --arg title "MR pre-review (skipped): ${MR_TITLE}" \
+            --arg project "{{input.project}}" \
+            --rawfile seed /tmp/seed-prompt-${MR_IID} \
+            '{title: $title, project: $project, seed_message: $seed}')" \
+          | jq -r '.session_id // .id // .' > /tmp/chat-id-${MR_IID}
+        CHAT_ID=$(cat /tmp/chat-id-${MR_IID})
+        rm -f /tmp/seed-prompt-${MR_IID} /tmp/chat-id-${MR_IID}
+        echo "CHAT_ID=${CHAT_ID}"
+        echo "MR_URL=${MR_URL}"
+        echo ""
+        echo "=== RESULT ==="
+        echo "Pre-review skipped — no changes since last Forge pre-review (${LAST_FORGE_TS:-unknown})."
+        exit 0
+      fi
 
       # Build the seed prompt in Python — analyze report contains
       # backticks / parens / quotes that an unquoted bash heredoc

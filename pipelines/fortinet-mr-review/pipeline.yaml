@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.3.2"
+version: "0.4.0"
 
 input:
   project:
@@ -408,12 +408,15 @@ nodes:
       fi
 
       # Per-STATUS side-effects on the MR itself:
-      #   skipped → label forge:no-fix-needed
-      #   close   → label forge:no-merge + close the MR
-      #   pushed  → label forge:fix-applied
+      #   skipped → verdict label forge:no-fix-needed
+      #   close   → verdict label forge:no-merge + close the MR
+      #   pushed  → verdict label forge:fix-applied
+      # PLUS in every terminal case, set the stage label forge:stage/reviewed
+      # (mutually exclusive with the other forge:stage/* labels).
       # All best-effort: missing labels return 4xx, we log + continue.
       LABEL_RESULT="not changed"
       CLOSE_RESULT="not closed"
+      STAGE_LABEL="not set"
       case "$STATUS" in
         skipped)
           if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
@@ -451,10 +454,22 @@ nodes:
           ;;
       esac
 
+      # Stage label — set on every terminal status (skipped/close/pushed)
+      # since they all represent "Forge has reviewed this MR".
+      if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+           -f "add_labels=forge:stage/reviewed" \
+           -f "remove_labels=forge:stage/needs-review,forge:stage/pre-reviewed" \
+           > /dev/null 2>&1; then
+        STAGE_LABEL="forge:stage/reviewed"
+      else
+        STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
+      fi
+
       echo "STATUS=${STATUS}"
       echo "REPLY_POSTED=${REPLY_POSTED}"
       echo "NOTE_ID=${NOTE_ID}"
       echo "LABEL_RESULT=${LABEL_RESULT}"
+      echo "STAGE_LABEL=${STAGE_LABEL}"
       echo "CLOSE_RESULT=${CLOSE_RESULT}"
       echo ""
       echo "=== RESULT ==="
@@ -464,7 +479,8 @@ nodes:
       else
         echo "  POST failed — see glab error above"
       fi
-      echo "  Label: ${LABEL_RESULT}"
+      echo "  Verdict label: ${LABEL_RESULT}"
+      echo "  Stage label:   ${STAGE_LABEL}"
       if [ "$STATUS" = "close" ]; then
         echo "  Close: ${CLOSE_RESULT}"
       fi

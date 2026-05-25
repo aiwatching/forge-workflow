@@ -2,7 +2,7 @@
   "name": "fortinet-mr-pre-review",
   "display_name": "Fortinet \u00b7 MR Pre-Review (single)",
   "description": "Single-shot Fortinet GitLab MR pre-review. User provides an MR URL; pipeline fetches MR meta + diff + discussion, runs Claude analysis per user_prompt focus, posts a '\ud83e\udd16 Forge pre-review:' comment, and opens a Forge chat session for the human reviewer to drill into. Copy of mr-pre-review simplified for manual single runs.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "author": "forge",
   "tags": [
     "fortinet",

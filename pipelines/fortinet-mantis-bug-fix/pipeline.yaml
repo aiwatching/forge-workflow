@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.4.9"
+version: "0.4.10"
 
 input:
   project:
@@ -1082,6 +1082,23 @@ nodes:
         echo "ERROR: could not create OR find MR for $BRANCH. See glab output above." >&2
         exit 1
       fi
+
+      # Stage label: forge:stage/needs-review (mutually exclusive with
+      # the other forge:stage/* labels). Best-effort.
+      MR_IID=$(echo "$MR_URL" | sed -nE 's|.*/merge_requests/([0-9]+).*|\1|p')
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_PATH")
+      STAGE_LABEL="not set"
+      if [ -n "$MR_IID" ] && [ -n "$PID_ENC" ]; then
+        if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+             -f "add_labels=forge:stage/needs-review" \
+             -f "remove_labels=forge:stage/pre-reviewed,forge:stage/reviewed" \
+             > /dev/null 2>&1; then
+          STAGE_LABEL="forge:stage/needs-review"
+        else
+          STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
+        fi
+      fi
+      echo "STAGE_LABEL=$STAGE_LABEL"
     mode: shell
     depends_on:
       - fix-code
