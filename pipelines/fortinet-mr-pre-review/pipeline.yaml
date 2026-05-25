@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.3.1"
+version: "0.4.0"
 
 input:
   project:
@@ -49,24 +49,15 @@ input:
     multiline: true
     label: "Review focus prompt"
     default: |
-      Focus the review on:
-        - Correctness: does the change do what the description /
-          commit messages claim? Any obvious logic bugs?
-        - Tests: are new code paths covered? Any test removed
-          without justification?
-        - Security: input validation, authn/authz checks, secrets,
-          injection vectors.
-        - Backwards compatibility: API / schema / config changes
-          that could break existing callers.
-        - Code quality: dead code, unused imports, hard-coded paths,
-          TODO/FIXME left in.
+      Focus on:
+        - Correctness: does it do what the description claims? Obvious bugs?
+        - Tests: new paths covered? Tests removed without reason?
+        - Security: input validation, authn/authz, secrets, injection.
+        - Backwards compat: API / schema / config changes that break callers.
 
-      NEVER say 'approved' / 'lgtm' / 'rejected' in the reply — that's
-      the human reviewer's call. Stay neutral and informative.
-
-      If the MR is draft / WIP, note that and lean toward verdict
-      'need-discussion'. If the diff is too large to fully assess,
-      say so and list which files / functions you DID examine.
+      Give a clear recommendation: either the MR looks safe to merge,
+      or the human should re-review (and why). Draft / WIP MRs always
+      need re-review.
 
 nodes:
   # ── 1. Ingest — parse URL inputs + fetch all MR data via glab ──
@@ -183,39 +174,31 @@ nodes:
 
       ```
       ─── VERDICT ───
-      <one of: looks-good | has-concerns | need-discussion>
-
-      ─── ONE-LINER ───
-      <≤ 80 chars, what this MR does in plain English>
+      <one of: ready-to-merge | needs-review>
 
       ─── FINDINGS ───
       <bullet list, each line:
-        - <severity: info|nit|concern|blocker> <file:line> <terse description>
-        - ...
+        - <severity: nit|concern|blocker> <file:line> <terse description>
       If nothing to flag, write: "(none)" on a single line.>
 
-      ─── DISCUSSION POINTS ───
-      <questions / decisions for the human reviewer to weigh in on,
-       bullet list. If none, write "(none)".>
-
       ─── REPLY DRAFT ───
-      <markdown body that will be posted to GitLab as the comment
-       body. DO NOT include the '🤖 Forge pre-review:' header — the
-       post step prepends it. Start directly with the analysis prose.
-       Should be terse, useful, no rubber-stamp. NEVER say 'approved'
-       / 'lgtm' / 'rejected' — leave the verdict to the human.
-       ≤ 400 words.>
+      <markdown body posted as the GitLab comment. Must start with
+       ONE of these lines (matching the VERDICT above):
+
+         **Recommendation:** ✅ Looks safe to merge.
+         **Recommendation:** ⚠️ Needs another review — <one-line why>.
+
+       Then 2-5 bullets summarizing what you checked + any findings.
+       Terse. ≤ 200 words. Don't restate what the diff obviously does.
+       Don't repeat the '🤖 Forge pre-review:' header — the post step
+       prepends it.>
       ```
 
       Rules:
-        - Stay neutral. You're informing a decision, not making it.
+        - draft / WIP MRs → always `needs-review`.
+        - Too-large diff → `needs-review`, list what you DID examine.
         - Cite file:line when raising findings.
-        - Don't restate what the diff obviously does.
-        - If the MR is draft / WIP, note that and use verdict
-          'need-discussion'.
-        - If the diff is too large to fully assess, say so
-          explicitly and list which files / functions you DID
-          examine vs not.
+        - Be decisive: pick one verdict, don't hedge.
     outputs:
       - name: report
         extract: stdout
@@ -343,14 +326,12 @@ nodes:
       print()
       print("─── Next step ───")
       print()
-      print("Forge has posted the REPLY DRAFT as a comment on the MR.")
+      print("Comment posted on the MR with the recommendation above.")
       print("What do you want to do?")
-      print(f"  a) Approve the MR (`glab mr approve {e['MR_IID_E']}` from the worktree)")
-      print("  b) Request changes (write a follow-up comment via `glab mr note create`)")
-      print("  c) Investigate further (ask me to look at specific files / behaviours)")
+      print(f"  a) Approve (`glab mr approve {e['MR_IID_E']}`)")
+      print("  b) Request changes (follow-up comment)")
+      print("  c) Look closer at specific files / behaviour")
       print("  d) Nothing — leave it as is")
-      print()
-      print("Pick a/b/c/d and I'll help.")
       PY
 
       curl -sS -X POST http://127.0.0.1:8403/api/chat-proxy/sessions \
