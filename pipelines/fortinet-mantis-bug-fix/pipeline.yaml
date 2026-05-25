@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.5.2"
+version: "0.5.3"
 
 input:
   project:
@@ -1332,35 +1332,27 @@ nodes:
 
       set +e
 
-      WORKTREE_DIR=$'{{nodes.worktree-setup.outputs.wt}}'
+      # Rebuild WORKTREE_DIR from template instead of decoding from upstream
+      # — same pattern as fortinet-mr-review's cleanup. BUG_ID comes from
+      # resolve via INFO.
 
-      WORKTREE_DIR=$(echo "$WORKTREE_DIR" | head -1 | tr -d '[:space:]')
+      INFO=$'{{nodes.resolve.outputs.info}}'
 
-      # Derive BRANCH from inside the worktree before we delete it.
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
+
+      WORKTREE_DIR="{{run.tmp_dir}}/mantis-${BUG_ID}"
 
       BRANCH=$(git -C "$WORKTREE_DIR" symbolic-ref --short HEAD 2>/dev/null)
 
       cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)"
 
-      ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-
-      [ -z "$ROOT" ] && { echo "SKIP — not in a git repo"; exit 0; }
-
-      # Paranoia — only clean under THIS run's tmp_dir (consistent with
-      # how mr-pre-review / mr-review reference scratch). Framework
-      # template expands to <project>/.forge/worktrees/pipeline-<runId>/,
-      # so any path under it is fair game; anything else is suspicious.
-
-      case "$WORKTREE_DIR" in
-        "{{run.tmp_dir}}/"*) : ;;
-        *) echo "SKIP — WORKTREE_DIR=$WORKTREE_DIR not under {{run.tmp_dir}}"; exit 0 ;;
-      esac
-
-      echo "removing worktree $WORKTREE_DIR …"
-
-      git worktree remove --force "$WORKTREE_DIR" 2>&1 || rm -rf "$WORKTREE_DIR"
-
-      git worktree prune
+      if [ -d "$WORKTREE_DIR" ]; then
+        echo "removing worktree $WORKTREE_DIR …"
+        git worktree remove --force "$WORKTREE_DIR" 2>&1 || rm -rf "$WORKTREE_DIR"
+        git worktree prune
+      else
+        echo "no worktree at $WORKTREE_DIR (already cleaned or never created)"
+      fi
 
       # Drop the local branch too — remote copy is on GitLab + the MR.
 
