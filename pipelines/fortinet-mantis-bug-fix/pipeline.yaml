@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.5.1"
+version: "0.5.2"
 
 input:
   project:
@@ -1346,12 +1346,14 @@ nodes:
 
       [ -z "$ROOT" ] && { echo "SKIP — not in a git repo"; exit 0; }
 
-      # Paranoia — only clean under .forge/worktrees/ (both the new
-      # pipeline-<id>/ scratch and the legacy direct-mantis-<id>/ layout).
+      # Paranoia — only clean under THIS run's tmp_dir (consistent with
+      # how mr-pre-review / mr-review reference scratch). Framework
+      # template expands to <project>/.forge/worktrees/pipeline-<runId>/,
+      # so any path under it is fair game; anything else is suspicious.
 
       case "$WORKTREE_DIR" in
-        "$ROOT/.forge/worktrees/"*) : ;;
-        *) echo "SKIP — WORKTREE_DIR=$WORKTREE_DIR not under .forge/worktrees/"; exit 0 ;;
+        "{{run.tmp_dir}}/"*) : ;;
+        *) echo "SKIP — WORKTREE_DIR=$WORKTREE_DIR not under {{run.tmp_dir}}"; exit 0 ;;
       esac
 
       echo "removing worktree $WORKTREE_DIR …"

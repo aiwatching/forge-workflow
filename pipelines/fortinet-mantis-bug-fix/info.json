@@ -2,7 +2,7 @@
   "name": "fortinet-mantis-bug-fix",
   "display_name": "Fortinet \u00b7 Mantis Bug Fix (single)",
   "description": "Single-shot Fortinet Mantis bug \u2192 fix \u2192 MR pipeline. Input is just bug_id + project + base_branch + three editable prompts (focus / MR body / Teams message). Fetches summary/description/reporter/assignee/etc from Mantis at run time, has Claude propose a minimal fix, opens a GitLab MR via glab, notifies assignee + reporter on Teams.",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "author": "forge",
   "tags": [
     "fortinet",
