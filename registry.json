@@ -136,7 +136,7 @@
       "name": "mantis-bug-fix-and-mr",
       "display_name": "Mantis Bug Fix + MR",
       "description": "Fetch Mantis bug context \u2192 worktree \u2192 Claude proposes a fix \u2192 push branch \u2192 open GitLab MR via glab \u2192 notify assignee + reporter on Teams. Used by the mantis-bug-fix / mantis-bug-watch recipes.",
-      "version": "0.6.6",
+      "version": "0.6.7",
       "author": "forge",
       "tags": [
         "mantis",
@@ -211,7 +211,7 @@
       "name": "fortinet-mantis-bug-fix",
       "display_name": "Fortinet \u00b7 Mantis Bug Fix (single)",
       "description": "Single-shot Fortinet Mantis bug \u2192 fix \u2192 MR pipeline. Input is just bug_id + project + base_branch + three editable prompts (focus / MR body / Teams message). Fetches summary/description/reporter/assignee/etc from Mantis at run time, has Claude propose a minimal fix, opens a GitLab MR via glab, notifies assignee + reporter on Teams.",
-      "version": "0.4.1",
+      "version": "0.4.9",
       "author": "forge",
       "tags": [
         "fortinet",

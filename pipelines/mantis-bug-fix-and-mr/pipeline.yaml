@@ -690,15 +690,24 @@ nodes:
 
       git push -u origin "$BRANCH" --force-with-lease 2>&1
 
-      # Heredoc keeps Claude's summary intact (apostrophes, parens, $, …).
+      # Capture Claude's summary into SUMMARY. Write to a tmp file
+      # first, then `$(< file)`. Do NOT use `SUMMARY=$(cat <<EOF ... EOF)`
+      # directly — bash's `$(...)` parser scans the body for nested
+      # backticks/apostrophes EVEN INSIDE a quoted-heredoc, so any
+      # markdown with `` `code's` `` (backtick + apostrophe) crashes with
+      # "syntax error near `)`". The file detour sidesteps it.
 
-      SUMMARY=$(cat <<'FORGE_SUMMARY_EOF'
+      __FORGE_SUMMARY_FILE=/tmp/forge-summary.$$
+
+      cat <<'__FORGE_FIX_SUMMARY_EOF_x7k9z2q4__' > "$__FORGE_SUMMARY_FILE"
 
       {{raw:nodes.fix-code.outputs.summary}}
 
-      FORGE_SUMMARY_EOF
+      __FORGE_FIX_SUMMARY_EOF_x7k9z2q4__
 
-      )
+      SUMMARY=$(< "$__FORGE_SUMMARY_FILE")
+
+      rm -f "$__FORGE_SUMMARY_FILE"
 
       # ALL pipeline-templated values must enter via `$'…'` ANSI-C quoting,
 

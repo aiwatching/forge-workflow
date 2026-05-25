@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.4.1"
+version: "0.4.9"
 
 input:
   project:
@@ -81,6 +81,11 @@ input:
 
       ## Testing Done
       TBD — please verify in CI + smoke test.
+  mr_reviewer:
+    description: "Comma-separated GitLab usernames (without @) for MR reviewers. Example: 'alice, bob, carol'. Optional — leave empty to skip."
+    type: string
+    label: "MR reviewers (comma-separated usernames)"
+    default: ""
   teams_message_template:
     description: "Teams notification template. Placeholders: {bug_id} {summary} {role} {mr_url} {who}"
     type: string
@@ -151,8 +156,7 @@ nodes:
 
       INFO=$'{{nodes.resolve.outputs.info}}'
 
-      eval "$(echo "$INFO" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed
-      's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
 
       # worktree: false above keeps us in the project root, so this is fine.
 
@@ -248,7 +252,7 @@ nodes:
       # fix-code has every field it could possibly want.
       set -e
       INFO=$'{{nodes.resolve.outputs.info}}'
-      eval "$(echo "$INFO" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
       # Param name must be `bug_id` (matches mantis manifest's get_bug
       # parameters.bug_id). Earlier versions sent `id`, which made
       # {args.bug_id} resolve to empty → page URL became
@@ -493,8 +497,7 @@ nodes:
 
       INFO=$'{{nodes.resolve.outputs.info}}'
 
-      eval "$(echo "$INFO" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed
-      's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
 
       WORKTREE_DIR=$'{{nodes.worktree-setup.outputs.wt}}'
 
@@ -714,6 +717,24 @@ nodes:
         (rare), use the Forge HTTP API instead of MCP. POST
         http://127.0.0.1:8403/api/connector-tool with JSON body
         {"plugin_id":"<plugin>","tool":"<tool>","input":{...}}
+      - **This worktree IS likely a monorepo. Frontend + backend live
+        together.** Before you write "this is a frontend Angular issue,
+        out of repo scope" or "the source lives in a different
+        codebase" — STOP and verify. Run:
+          `ls`
+          `find . -maxdepth 3 -type d \( -name gui -o -name web -o -name frontend -o -name client -o -name ui -o -name dashboard \)`
+          `find . -maxdepth 4 -name angular.json -o -name package.json | head -20`
+        FortiNAC specifically has the full Angular workspace at
+        `gui/` (apps + libs + angular.json). If the bug mentions
+        Angular / dashboard widget / JS bundle / `main.*.js` /
+        column definitions / Alarms widget — the source IS in this
+        worktree, under `gui/apps/...` or `gui/libs/...`. `git grep`
+        from the worktree root searches BOTH backend and frontend.
+        Only SKIP-with-out-of-scope after you have actually grepped
+        the frontend tree AND the relevant file is genuinely absent.
+        "I see prior SKIP bugnotes from previous Forge runs" is NOT a
+        valid reason to skip — those runs may have been wrong too;
+        you must independently verify the file is missing.
 
       ## Steps
 
@@ -754,15 +775,13 @@ nodes:
 
       INFO=$'{{nodes.resolve.outputs.info}}'
 
-      eval "$(echo "$INFO" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed
-      's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
 
       # Pull SUMMARY / PRIORITY / REPORTER / ASSIGNEE / *_B64 from
       # fetch-bug-details — single source of truth for bug metadata.
       DETAILS=$'{{nodes.fetch-bug-details.outputs.details}}'
 
-      eval "$(echo "$DETAILS" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed
-      's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$DETAILS"
 
       DESCRIPTION=$(echo "$DESCRIPTION_B64" | base64 -d 2>/dev/null || echo "")
 
@@ -782,15 +801,28 @@ nodes:
 
       git push -u origin "$BRANCH" --force-with-lease 2>&1
 
-      # Heredoc keeps Claude's summary intact (apostrophes, parens, $, …).
+      # Capture Claude's summary into SUMMARY. Critically: write to a
+      # tmp file first, then `$(< file)`. Do NOT use `SUMMARY=$(cat
+      # <<EOF ... EOF)` directly — bash's `$(...)` parser scans the
+      # body for nested backticks and apostrophes EVEN INSIDE a
+      # quoted-heredoc body, so any markdown with `` `code's` `` (back-
+      # tick + apostrophe) crashes parsing with "syntax error near
+      # unexpected token ')'". The file detour sidesteps that — the
+      # `cat <<EOF > file` is OUTSIDE any $(), and `$(< file)` doesn't
+      # parse the file's content. Marker is still long-random in case
+      # Claude ever emits it literally.
 
-      SUMMARY=$(cat <<'FORGE_SUMMARY_EOF'
+      __FORGE_SUMMARY_FILE=/tmp/forge-summary.$$
+
+      cat <<'__FORGE_FIX_SUMMARY_EOF_x7k9z2q4__' > "$__FORGE_SUMMARY_FILE"
 
       {{raw:nodes.fix-code.outputs.summary}}
 
-      FORGE_SUMMARY_EOF
+      __FORGE_FIX_SUMMARY_EOF_x7k9z2q4__
 
-      )
+      SUMMARY=$(< "$__FORGE_SUMMARY_FILE")
+
+      rm -f "$__FORGE_SUMMARY_FILE"
 
       # ALL pipeline-templated values must enter via `$'…'` ANSI-C quoting,
 
@@ -824,7 +856,26 @@ nodes:
 
       tpl, bug_id, summary = sys.argv[1], sys.argv[2], sys.argv[3]
 
-      print(tpl.replace('{bug_id}', bug_id).replace('{summary}', summary))
+      # GitLab MR title hard limit is 255 chars. Claude's `summary` is the
+      # full result_summary — often a multi-line explanation paragraph that
+      # blows past 255. Take only the first non-empty line, then cap so
+      # `Fix Mantis #N: <line>` fits comfortably.
+
+      first = next((ln.strip() for ln in summary.splitlines() if ln.strip()), summary.strip())
+
+      MAX = 255
+
+      out = tpl.replace('{bug_id}', bug_id).replace('{summary}', first)
+
+      if len(out) > MAX:
+          # Shrink the summary slice — keep the prefix intact, append ellipsis.
+          overhead = len(tpl.replace('{bug_id}', bug_id).replace('{summary}', ''))
+          room = MAX - overhead - 1  # 1 for the ellipsis
+          if room < 10: room = 10
+          out = tpl.replace('{bug_id}', bug_id).replace('{summary}', first[:room].rstrip() + '…')
+          out = out[:MAX]
+
+      print(out)
 
       PY
 
@@ -871,24 +922,53 @@ nodes:
       fi
 
 
-      # Bug assignee → MR reviewer. Mantis assignee comes as "Jane Doe (jdoe)";
-
-      # extract the (username) and pass to glab. If parens absent or empty,
-
-      # skip the flag — glab errors on --reviewer "" .
+      # MR people-flags. Two independent assignments:
+      #   1. Bug assignee  → MR --assignee   (whoever owns the bug should own the MR)
+      #   2. input.mr_reviewer → MR --reviewer  (user-typed, optional)
+      # Mantis ASSIGNEE comes as "Jane Doe (jdoe)"; extract (jdoe). Empty
+      # values skip the corresponding flag — glab errors on `--assignee ""`
+      # / `--reviewer ""`.
 
       ASSIGNEE_RAW="$ASSIGNEE"
 
-      REVIEWER_USERNAME=$(echo "$ASSIGNEE_RAW" | grep -oE
+      ASSIGNEE_USERNAME=$(echo "$ASSIGNEE_RAW" | grep -oE
       '\(([a-zA-Z0-9._-]+)\)' | tail -1 | tr -d '()')
 
-      REVIEWER_FLAGS=()
+      REVIEWER_USERNAMES_RAW=$'{{input.mr_reviewer}}'
 
-      if [ -n "$REVIEWER_USERNAME" ]; then
-        REVIEWER_FLAGS+=(--reviewer "$REVIEWER_USERNAME")
-        echo "Setting MR reviewer: $REVIEWER_USERNAME (from assignee '$ASSIGNEE_RAW')"
+      PEOPLE_FLAGS=()
+
+      REVIEWER_LIST=""
+
+      if [ -n "$ASSIGNEE_USERNAME" ]; then
+        PEOPLE_FLAGS+=(--assignee "$ASSIGNEE_USERNAME")
+        echo "Setting MR assignee: $ASSIGNEE_USERNAME (from bug assignee '$ASSIGNEE_RAW')"
       else
-        echo "No (username) found in assignee '$ASSIGNEE_RAW' — skipping --reviewer"
+        echo "No (username) found in bug assignee '$ASSIGNEE_RAW' — skipping --assignee"
+      fi
+
+      # Split input.mr_reviewer on `,`, trim each, skip blanks. Each
+      # reviewer becomes its own --reviewer flag (glab supports the flag
+      # repeated; safer than `--reviewer a,b,c` which depends on glab
+      # version). Bash: IFS=',' read -ra splits; xargs trims surrounding
+      # whitespace including any leftover \r.
+
+      if [ -n "$REVIEWER_USERNAMES_RAW" ]; then
+        IFS=',' read -ra __REVS <<< "$REVIEWER_USERNAMES_RAW"
+        for __r in "${__REVS[@]}"; do
+          __r=$(echo "$__r" | xargs)
+          if [ -n "$__r" ]; then
+            PEOPLE_FLAGS+=(--reviewer "$__r")
+            REVIEWER_LIST="${REVIEWER_LIST:+$REVIEWER_LIST,}$__r"
+          fi
+        done
+        if [ -n "$REVIEWER_LIST" ]; then
+          echo "Setting MR reviewers: $REVIEWER_LIST (from input.mr_reviewer)"
+        else
+          echo "input.mr_reviewer had only blanks/commas — skipping --reviewer"
+        fi
+      else
+        echo "input.mr_reviewer empty — skipping --reviewer"
       fi
 
       # Capture glab output AND exit code so we can debug failures. Old
@@ -906,7 +986,7 @@ nodes:
       GLAB_OUT=$(glab mr create -R "$PROJECT_PATH" --target-branch "$BASE"
       --source-branch "$BRANCH" \
         --title "$MR_TITLE" --description "$MR_BODY" \
-        "${REVIEWER_FLAGS[@]}" \
+        "${PEOPLE_FLAGS[@]}" \
         --yes 2>&1)
       GLAB_RC=$?
 
@@ -948,34 +1028,60 @@ nodes:
       'https://[^[:space:]]+/-/merge_requests/[0-9]+' | head -1)
 
 
-      # If glab succeeded but we didn't parse a URL (output format
+      # Classify failure: "MR already exists for branch" is the ONLY
+      # rc!=0 case we recover from silently — that's an idempotent
+      # re-run and we want notify-teams to point at the existing MR.
+      # Any other non-zero rc (title too long, validation errors, 5xx,
+      # auth refusal we didn't catch above) is a REAL failure. Fall
+      # through to a fallback URL lookup so notify-teams has something
+      # to reference, but mark the node failed so the user notices in
+      # the pipeline UI instead of getting a silent "success".
 
-      # variant), OR if the MR already existed (glab errors on conflict),
+      CREATE_FAILED_HARD=0
 
-      # fall back to looking up the MR by source branch.
+      if [ "$GLAB_RC" -ne 0 ]; then
+        if echo "$GLAB_OUT" | grep -qiE 'already exists|already an open|another open merge request'; then
+          echo "(glab rc=$GLAB_RC but matches 'already exists' — treating as idempotent)"
+        else
+          echo "ERROR: glab mr create failed (rc=$GLAB_RC) — see output above." >&2
+          CREATE_FAILED_HARD=1
+        fi
+      fi
+
+
+      # Fallback lookup for both the idempotent path AND the hard-fail
+      # path — we still want MR_URL set so notify-teams / mark-fixed
+      # can reference whatever MR exists for this branch.
 
       if [ -z "$MR_URL" ]; then
         echo "Fallback: looking up existing MR for branch $BRANCH"
         MR_URL=$(glab mr view "$BRANCH" -R "$PROJECT_PATH" --output json 2>/dev/null | jq -r '.web_url // empty')
         if [ -z "$MR_URL" ]; then
-          # Last resort: glab mr list with our source branch.
           MR_URL=$(glab mr list -R "$PROJECT_PATH" --source-branch "$BRANCH" --output json 2>/dev/null \
             | jq -r '.[0].web_url // empty')
         fi
       fi
 
 
-      if [ -z "$MR_URL" ]; then
-        echo "ERROR: could not create OR find MR for $BRANCH. See glab output above." >&2
-        # Don't fail the node hard — push succeeded, the user can create
-        # the MR manually via the GitLab "create MR" hint in the push
-        # output. notify-teams will see empty MR_URL and skip.
+      echo "MR_URL=$MR_URL"
+
+      echo "MR_ASSIGNEE=$ASSIGNEE_USERNAME"
+
+      echo "MR_REVIEWER=$REVIEWER_LIST"
+
+
+      if [ "$CREATE_FAILED_HARD" = "1" ]; then
+        if [ -n "$MR_URL" ]; then
+          echo "WARN: glab create failed; reusing existing MR $MR_URL — its title / description may NOT reflect this run's commits." >&2
+        fi
+        exit 1
       fi
 
 
-      echo "MR_URL=$MR_URL"
-
-      echo "REVIEWER=$REVIEWER_USERNAME"
+      if [ -z "$MR_URL" ]; then
+        echo "ERROR: could not create OR find MR for $BRANCH. See glab output above." >&2
+        exit 1
+      fi
     mode: shell
     depends_on:
       - fix-code
@@ -998,7 +1104,7 @@ nodes:
       set +e
       BUG_ID="{{input.bug_id}}"
       MR_OUT=$'{{nodes.push-and-mr.outputs.mr}}'
-      eval "$(echo "$MR_OUT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$MR_OUT"
 
       if [ -z "${MR_URL:-}" ]; then
         echo "SKIP — no MR was created (Claude made no changes or skip-if-handled hit)"
@@ -1048,7 +1154,7 @@ nodes:
       set +e
       BUG_ID="{{input.bug_id}}"
       MR_OUT=$'{{nodes.push-and-mr.outputs.mr}}'
-      eval "$(echo "$MR_OUT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed 's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$MR_OUT"
       FIX_SUMMARY=$'{{nodes.fix-code.outputs.summary}}'
 
       # Neutral marker (no "Forge" string) — grep `ref: autofix-<id>`
@@ -1119,13 +1225,11 @@ nodes:
 
       MR_OUT=$'{{nodes.push-and-mr.outputs.mr}}'
 
-      eval "$(echo "$MR_OUT" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed
-      's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$MR_OUT"
 
       DETAILS=$'{{nodes.fetch-bug-details.outputs.details}}'
 
-      eval "$(echo "$DETAILS" | grep -E '^[A-Za-z_][A-Za-z0-9_]*=' | sed
-      's/^/export /')"
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$DETAILS"
 
       if [ -z "$MR_URL" ]; then
         echo "SKIP — no MR URL (Claude likely made no changes)"
