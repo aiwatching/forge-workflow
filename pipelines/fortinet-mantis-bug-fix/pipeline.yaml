@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.5.0"
+version: "0.5.1"
 
 input:
   project:
@@ -144,7 +144,7 @@ nodes:
     project: "{{input.project}}"
     # MUST stay in project root — the script below explicitly creates a
     # NEW worktree at `{{run.tmp_dir}}/mantis-${BUG_ID}` (=
-    # `<project>/worktrees/pipeline-<runId>/mantis-<bug_id>/`). If the
+    # `<project>/.forge/worktrees/pipeline-<runId>/mantis-<bug_id>/`). If the
     # orchestrator opens its own `pipeline/<id>` worktree first, the
     # subsequent `git worktree add fix/mantis-X` collides with the
     # orchestrator's auto-attempt downstream (same branch, different
@@ -169,7 +169,7 @@ nodes:
 
       cd "$ROOT"
 
-      # New layout: per-run scratch under {{run.tmp_dir}} (= $ROOT/worktrees/pipeline-<id>/).
+      # New layout: per-run scratch under {{run.tmp_dir}} (= $ROOT/.forge/worktrees/pipeline-<id>/).
       # Framework already mkdir-ed pipeline-<id>/; the git worktree itself lives
       # at mantis-<bug_id>/ inside it, so cleanup of the whole pipeline run is
       # rm -rf pipeline-<id>/ and the worktree goes with it.
@@ -1346,13 +1346,12 @@ nodes:
 
       [ -z "$ROOT" ] && { echo "SKIP — not in a git repo"; exit 0; }
 
-      # Paranoia — only clean under our worktrees/pipeline-<id>/ scratch
-      # (or the legacy .forge/worktrees/ for any in-flight pre-v0.5 runs).
+      # Paranoia — only clean under .forge/worktrees/ (both the new
+      # pipeline-<id>/ scratch and the legacy direct-mantis-<id>/ layout).
 
       case "$WORKTREE_DIR" in
-        "$ROOT/worktrees/pipeline-"*) : ;;
         "$ROOT/.forge/worktrees/"*) : ;;
-        *) echo "SKIP — WORKTREE_DIR=$WORKTREE_DIR not under known scratch path"; exit 0 ;;
+        *) echo "SKIP — WORKTREE_DIR=$WORKTREE_DIR not under .forge/worktrees/"; exit 0 ;;
       esac
 
       echo "removing worktree $WORKTREE_DIR …"
