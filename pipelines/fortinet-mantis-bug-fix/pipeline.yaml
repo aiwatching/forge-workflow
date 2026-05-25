@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.4.11"
+version: "0.5.0"
 
 input:
   project:
@@ -143,7 +143,8 @@ nodes:
   worktree-setup:
     project: "{{input.project}}"
     # MUST stay in project root — the script below explicitly creates a
-    # NEW worktree at `.forge/worktrees/mantis-${BUG_ID}`. If the
+    # NEW worktree at `{{run.tmp_dir}}/mantis-${BUG_ID}` (=
+    # `<project>/worktrees/pipeline-<runId>/mantis-<bug_id>/`). If the
     # orchestrator opens its own `pipeline/<id>` worktree first, the
     # subsequent `git worktree add fix/mantis-X` collides with the
     # orchestrator's auto-attempt downstream (same branch, different
@@ -168,7 +169,12 @@ nodes:
 
       cd "$ROOT"
 
-      WORKTREE_DIR="$ROOT/.forge/worktrees/mantis-$BUG_ID"
+      # New layout: per-run scratch under {{run.tmp_dir}} (= $ROOT/worktrees/pipeline-<id>/).
+      # Framework already mkdir-ed pipeline-<id>/; the git worktree itself lives
+      # at mantis-<bug_id>/ inside it, so cleanup of the whole pipeline run is
+      # rm -rf pipeline-<id>/ and the worktree goes with it.
+
+      WORKTREE_DIR="{{run.tmp_dir}}/mantis-${BUG_ID}"
 
       BRANCH="fix/mantis-${BUG_ID}"
 
@@ -212,7 +218,7 @@ nodes:
           fi
         done
         git branch -D "$BRANCH" 2>/dev/null || true
-        mkdir -p "$ROOT/.forge/worktrees"
+        mkdir -p "$(dirname "$WORKTREE_DIR")"
         # -B (capital) = create-or-reset; --force lets us reuse an existing dir.
         git worktree add --force -B "$BRANCH" "$WORKTREE_DIR" "origin/$BASE"
       } 1>&2
@@ -812,7 +818,9 @@ nodes:
       # parse the file's content. Marker is still long-random in case
       # Claude ever emits it literally.
 
-      __FORGE_SUMMARY_FILE=/tmp/forge-summary.$$
+      __FORGE_SUMMARY_FILE="{{run.tmp_dir}}/mantis-${BUG_ID}/fix-summary"
+
+      mkdir -p "$(dirname "$__FORGE_SUMMARY_FILE")"
 
       cat <<'__FORGE_FIX_SUMMARY_EOF_x7k9z2q4__' > "$__FORGE_SUMMARY_FILE"
 
@@ -1338,11 +1346,13 @@ nodes:
 
       [ -z "$ROOT" ] && { echo "SKIP — not in a git repo"; exit 0; }
 
-      # Paranoia — only clean under our .forge/worktrees/.
+      # Paranoia — only clean under our worktrees/pipeline-<id>/ scratch
+      # (or the legacy .forge/worktrees/ for any in-flight pre-v0.5 runs).
 
       case "$WORKTREE_DIR" in
+        "$ROOT/worktrees/pipeline-"*) : ;;
         "$ROOT/.forge/worktrees/"*) : ;;
-        *) echo "SKIP — WORKTREE_DIR=$WORKTREE_DIR not under .forge/worktrees/"; exit 0 ;;
+        *) echo "SKIP — WORKTREE_DIR=$WORKTREE_DIR not under known scratch path"; exit 0 ;;
       esac
 
       echo "removing worktree $WORKTREE_DIR …"

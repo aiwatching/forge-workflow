@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.5.1"
+version: "0.6.0"
 
 input:
   project:
@@ -77,6 +77,12 @@ nodes:
       MR_URL="{{input.mr_url}}"
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
 
+      # Per-MR scratch dir under {{run.tmp_dir}} (= <project>/worktrees/pipeline-<id>/).
+      # Framework already mkdir-ed pipeline-<id>/; this carves out mr-<iid>/.
+      # All file paths below live inside MR_DIR so cleanup is just rm -rf pipeline-<id>/.
+      MR_DIR="{{run.tmp_dir}}/mr-${MR_IID}"
+      mkdir -p "$MR_DIR"
+
       # Fetch meta / diff / notes
       glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
         | jq -c '{
@@ -86,18 +92,18 @@ nodes:
             assignees: [.assignees[]?.username],
             reviewers: [.reviewers[]?.username],
             user_notes_count, changes_count
-          }' > /tmp/mr-pre-${MR_IID}-meta.json
+          }' > "${MR_DIR}/meta.json"
 
       glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/changes" \
         | jq -c '{ diff_refs, changes: [.changes[] | { old_path, new_path, new_file, renamed_file, deleted_file, diff }] }' \
-        > /tmp/mr-pre-${MR_IID}-diff.json
+        > "${MR_DIR}/diff.json"
 
       glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes?per_page=100&sort=asc" \
         | jq -c '[.[] | select(.system == false) | { id, author: .author.username, body, created_at }]' \
-        > /tmp/mr-pre-${MR_IID}-notes.json
+        > "${MR_DIR}/notes.json"
 
       # Extract env vars for downstream nodes
-      META=/tmp/mr-pre-${MR_IID}-meta.json
+      META="${MR_DIR}/meta.json"
       TITLE=$(jq -r '.title' "$META")
       AUTHOR=$(jq -r '.author' "$META")
       SRC=$(jq -r '.source_branch' "$META")
@@ -108,6 +114,7 @@ nodes:
       echo "MR_IID=${MR_IID}"
       echo "GITLAB_PROJECT_ID=${PROJECT_ID}"
       echo "MR_URL=${MR_URL}"
+      echo "MR_DIR=${MR_DIR}"
       echo "MR_TITLE=${TITLE}"
       echo "AUTHOR=${AUTHOR}"
       echo "SOURCE_BRANCH=${SRC}"
@@ -117,25 +124,25 @@ nodes:
 
       # base64-encoded blobs — analyze decodes inline (avoids
       # shell escaping issues with multi-line diffs)
-      echo "META_B64=$(base64 < /tmp/mr-pre-${MR_IID}-meta.json | tr -d '\n')"
-      echo "DIFF_B64=$(base64 < /tmp/mr-pre-${MR_IID}-diff.json | tr -d '\n')"
-      echo "NOTES_B64=$(base64 < /tmp/mr-pre-${MR_IID}-notes.json | tr -d '\n')"
+      echo "META_B64=$(base64 < ${MR_DIR}/meta.json | tr -d '\n')"
+      echo "DIFF_B64=$(base64 < ${MR_DIR}/diff.json | tr -d '\n')"
+      echo "NOTES_B64=$(base64 < ${MR_DIR}/notes.json | tr -d '\n')"
 
-      CHANGES_COUNT=$(jq -r '.changes | length' /tmp/mr-pre-${MR_IID}-diff.json)
-      NOTES_COUNT=$(jq -r 'length' /tmp/mr-pre-${MR_IID}-notes.json)
+      CHANGES_COUNT=$(jq -r '.changes | length' "${MR_DIR}/diff.json")
+      NOTES_COUNT=$(jq -r 'length' "${MR_DIR}/notes.json")
 
       # ── Skip detection: don't re-post if nothing changed since
       #    the last Forge pre-review comment.
       LAST_FORGE_TS=$(jq -r \
         '[.[] | select(.body | startswith("🤖 Forge pre-review:"))] | sort_by(.created_at) | last | .created_at // ""' \
-        /tmp/mr-pre-${MR_IID}-notes.json)
+        "${MR_DIR}/notes.json")
       SKIP_PRE_REVIEW=no
       SKIP_REASON=""
       if [ -n "$LAST_FORGE_TS" ]; then
         # Count non-forge notes after LAST_FORGE_TS
         NEW_NOTES_COUNT=$(jq -r --arg ts "$LAST_FORGE_TS" \
           '[.[] | select(.created_at > $ts and ((.body // "") | startswith("🤖 Forge pre-review:") | not))] | length' \
-          /tmp/mr-pre-${MR_IID}-notes.json)
+          "${MR_DIR}/notes.json")
         # Count commits after LAST_FORGE_TS (server-side time compare)
         NEW_COMMITS_COUNT=$(glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/commits?per_page=100" 2>/dev/null \
           | jq -r --arg ts "$LAST_FORGE_TS" '[.[] | select(.created_at > $ts)] | length')
@@ -283,16 +290,19 @@ nodes:
       # {{raw:...}} bypasses the engine's ANSI-C shell escape so the
       # multi-line analyzer report keeps real newlines inside the
       # quoted heredoc — otherwise the comment shows literal `\n`.
-      cat > /tmp/analyze-report-${MR_IID} <<'__FORGE_REPORT_EOF_a93k__'
+      # MR_DIR comes from ingest (decoded above into env).
+      mkdir -p "$MR_DIR"
+      cat > "${MR_DIR}/analyze-report" <<'__FORGE_REPORT_EOF_a93k__'
       {{raw:nodes.analyze.outputs.report}}
       __FORGE_REPORT_EOF_a93k__
 
       # Quoted heredoc — disable shell expansion so Python sees the
-      # script literally. Pass MR_IID via env instead of ${MR_IID}.
-      MR_IID="$MR_IID" python3 - <<'PY' > /tmp/reply-body-${MR_IID}
+      # script literally. Pass MR_DIR via env so the Python literal can
+      # reference it without bash-expanding ${...} inside the heredoc.
+      MR_DIR_ENV="$MR_DIR" python3 - <<'PY' > "${MR_DIR}/reply-body"
       import os, re
-      mr_iid = os.environ["MR_IID"]
-      with open(f"/tmp/analyze-report-{mr_iid}") as f:
+      mr_dir = os.environ["MR_DIR_ENV"]
+      with open(f"{mr_dir}/analyze-report") as f:
           text = f.read().strip()
       m = re.search(r'─── REPLY DRAFT ───\s*\n(.+)', text, re.DOTALL)
       print("🤖 Forge pre-review:")
@@ -322,7 +332,7 @@ nodes:
 
       NOTE_ID=$(glab api -X POST \
         "projects/${PID_ENC}/merge_requests/${MR_IID}/notes" \
-        --field "body=$(cat /tmp/reply-body-${MR_IID})" \
+        --field "body=$(cat ${MR_DIR}/reply-body)" \
         2>/dev/null | jq -r '.id // empty') || NOTE_ID=""
 
       if [ -n "$NOTE_ID" ]; then
@@ -373,9 +383,13 @@ nodes:
       INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INGEST_CONTEXT"
 
+      # MR_DIR comes from ingest; defensive mkdir for the skip path that
+      # runs before any other node has created it.
+      mkdir -p "$MR_DIR"
+
       # Skip path: just write a one-liner seed and open chat.
       if [ "${SKIP_PRE_REVIEW:-no}" = "yes" ]; then
-        cat > /tmp/seed-prompt-${MR_IID} <<EOF
+        cat > "${MR_DIR}/seed-prompt" <<EOF
       # MR pre-review — ${MR_TITLE}
 
       MR: ${MR_URL}
@@ -388,11 +402,10 @@ nodes:
           --data "$(jq -nc \
             --arg title "MR pre-review (skipped): ${MR_TITLE}" \
             --arg project "{{input.project}}" \
-            --rawfile seed /tmp/seed-prompt-${MR_IID} \
+            --rawfile seed "${MR_DIR}/seed-prompt" \
             '{title: $title, project: $project, seed_message: $seed}')" \
-          | jq -r '.session_id // .id // .' > /tmp/chat-id-${MR_IID}
-        CHAT_ID=$(cat /tmp/chat-id-${MR_IID})
-        rm -f /tmp/seed-prompt-${MR_IID} /tmp/chat-id-${MR_IID}
+          | jq -r '.session_id // .id // .' > "${MR_DIR}/chat-id"
+        CHAT_ID=$(cat "${MR_DIR}/chat-id")
         echo "CHAT_ID=${CHAT_ID}"
         echo "MR_URL=${MR_URL}"
         echo ""
@@ -410,11 +423,11 @@ nodes:
       # Python literal; single-line scalars come in via env.
       MR_TITLE_E="$MR_TITLE" MR_URL_E="$MR_URL" AUTHOR_E="$AUTHOR" \
       SOURCE_BRANCH_E="$SOURCE_BRANCH" TARGET_BRANCH_E="$TARGET_BRANCH" \
-      MR_IID_E="$MR_IID" \
-      python3 - <<'PY' > /tmp/seed-prompt-${MR_IID}
+      MR_IID_E="$MR_IID" MR_DIR_E="$MR_DIR" \
+      python3 - <<'PY' > "${MR_DIR}/seed-prompt"
       import os
       e = os.environ
-      with open(f"/tmp/analyze-report-{e['MR_IID_E']}") as f:
+      with open(f"{e['MR_DIR_E']}/analyze-report") as f:
           report = f.read().strip()
       print(f"# MR pre-review — {e['MR_TITLE_E']}")
       print()
@@ -441,12 +454,11 @@ nodes:
         --data "$(jq -nc \
           --arg title "MR pre-review: ${MR_TITLE}" \
           --arg project "{{input.project}}" \
-          --rawfile seed /tmp/seed-prompt-${MR_IID} \
+          --rawfile seed "${MR_DIR}/seed-prompt" \
           '{title: $title, project: $project, seed_message: $seed}')" \
-        | jq -r '.session_id // .id // .' > /tmp/chat-id-${MR_IID}
+        | jq -r '.session_id // .id // .' > "${MR_DIR}/chat-id"
 
-      CHAT_ID=$(cat /tmp/chat-id-${MR_IID})
-      rm -f /tmp/seed-prompt-${MR_IID} /tmp/chat-id-${MR_IID}
+      CHAT_ID=$(cat "${MR_DIR}/chat-id")
 
       echo "CHAT_ID=${CHAT_ID}"
       echo "MR_URL=${MR_URL}"

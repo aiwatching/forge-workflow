@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.4.1"
+version: "0.5.0"
 
 input:
   project:
@@ -73,7 +73,8 @@ nodes:
   #
   # Sole source of truth for downstream nodes: source_branch,
   # target_branch, comment history (json), the current diff.
-  # Written to /tmp/mr-<iid>-* so prompts stay small.
+  # Files live in {{run.tmp_dir}}/mr-<iid>/ so cleanup is just
+  # rm -rf pipeline-<id>/ at end of run.
   ingest:
     project: "{{input.project}}"
     worktree: false
@@ -83,9 +84,11 @@ nodes:
       PROJECT_ID="{{input.gitlab_project_id}}"
       MR_IID="{{input.mr_iid}}"
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
-      META=/tmp/mr-${MR_IID}-meta.json
-      NOTES=/tmp/mr-${MR_IID}-notes.json
-      DIFF=/tmp/mr-${MR_IID}-diff.txt
+      MR_DIR="{{run.tmp_dir}}/mr-${MR_IID}"
+      mkdir -p "$MR_DIR"
+      META="${MR_DIR}/meta.json"
+      NOTES="${MR_DIR}/notes.json"
+      DIFF="${MR_DIR}/diff.txt"
       glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" > "$META"
       glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes?per_page=100&sort=asc" > "$NOTES"
       glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/changes" \
@@ -100,6 +103,7 @@ nodes:
       echo "MR_TITLE=${TITLE}"
       echo "MR_AUTHOR=${AUTHOR}"
       echo "LATEST_COMMENTER=${LATEST}"
+      echo "MR_DIR=${MR_DIR}"
       echo "META_FILE=${META}"
       echo "NOTES_FILE=${NOTES}"
       echo "DIFF_FILE=${DIFF}"
@@ -344,14 +348,16 @@ nodes:
       # the rest of the value as commands → syntax error near the
       # outer `)`. Long markers + plain `cat > file <<EOF` decouple
       # the parse so a hit only breaks that file write, not the rest.
-      cat > /tmp/forge-triage-${MR_IID} <<'__FORGE_TRIAGE_EOF_x7k9z2q4__'
+      # MR_DIR comes from ingest INFO above.
+      mkdir -p "$MR_DIR"
+      cat > "${MR_DIR}/triage" <<'__FORGE_TRIAGE_EOF_x7k9z2q4__'
       {{raw:nodes.triage.outputs.reasoning}}
       __FORGE_TRIAGE_EOF_x7k9z2q4__
-      cat > /tmp/forge-fix-${MR_IID} <<'__FORGE_FIX_EOF_x7k9z2q4__'
+      cat > "${MR_DIR}/fix" <<'__FORGE_FIX_EOF_x7k9z2q4__'
       {{raw:nodes.fix.outputs.result}}
       __FORGE_FIX_EOF_x7k9z2q4__
-      TRIAGE=$(cat /tmp/forge-triage-${MR_IID})
-      FIX=$(cat /tmp/forge-fix-${MR_IID})
+      TRIAGE=$(cat "${MR_DIR}/triage")
+      FIX=$(cat "${MR_DIR}/fix")
       if echo "$FIX" | grep -Eq '(^|[[:space:]])FIX_RESULT:[[:space:]]*noop([[:space:]]|$)'; then
         # Silent path: triage determined nothing has changed since
         # the last Forge run. Don't post a reply.
@@ -530,12 +536,14 @@ nodes:
         WT_RESULT="none (SKIP path — worktree was never created)"
       fi
       git worktree prune >/dev/null 2>&1
-      rm -f /tmp/mr-{{input.mr_iid}}-meta.json /tmp/mr-{{input.mr_iid}}-notes.json /tmp/mr-{{input.mr_iid}}-diff.txt
+      # Per-MR scratch dir lives under {{run.tmp_dir}} now; framework
+      # wipes the whole pipeline-<id>/ on `done`, so we don't need to
+      # rm anything here. Left out the old `rm /tmp/...` lines.
       echo "=== RESULT ==="
       echo "Pipeline outcome:    ${STATUS:-?}"
       echo "Teams notification:  ${TEAMS_RESULT}"
       echo "Worktree:            ${WT_RESULT}"
-      echo "Tmp files:           removed (/tmp/mr-{{input.mr_iid}}-*)"
+      echo "Tmp dir:             {{run.tmp_dir}} (auto-cleaned on done)"
     outputs:
       - name: status
         extract: stdout
