@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.6.0"
+version: "0.6.1"
 
 input:
   project:
@@ -77,7 +77,7 @@ nodes:
       MR_URL="{{input.mr_url}}"
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
 
-      # Per-MR scratch dir under {{run.tmp_dir}} (= <project>/worktrees/pipeline-<id>/).
+      # Per-MR scratch dir under {{run.tmp_dir}} (= <project>/.forge/worktrees/pipeline-<id>/).
       # Framework already mkdir-ed pipeline-<id>/; this carves out mr-<iid>/.
       # All file paths below live inside MR_DIR so cleanup is just rm -rf pipeline-<id>/.
       MR_DIR="{{run.tmp_dir}}/mr-${MR_IID}"
