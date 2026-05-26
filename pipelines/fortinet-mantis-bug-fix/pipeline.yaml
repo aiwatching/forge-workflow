@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.6.0"
+version: "0.7.0"
 
 input:
   project:
@@ -332,6 +332,52 @@ nodes:
       echo "ASSIGNEE=$ASSIGNEE"
       echo "QA_ASSIGNEE=$QA_ASSIGNEE"
       echo "STATUS=$STATUS"
+
+      # ── Idempotency gate ─────────────────────────────────────────
+      # Find the last bugnote we (Forge) added — body contains the
+      # neutral footer `ref: autofix-<BUG_ID>` that notify-mantis writes.
+      # If found AND no human notes / history entries dated after it →
+      # nothing changed since last run; emit __SKIP__ so downstream
+      # (triage / fix-code / push-and-mr / mark-fixed / notify-mantis /
+      # notify-teams / cleanup) all auto-skip via the framework's
+      # dep-cascading. Avoids re-fixing + re-noting unchanged bugs.
+      FORGE_MARKER="ref: autofix-${BUG_ID}"
+      FORGE_LAST=$(echo "$BUG" | jq -r --arg m "$FORGE_MARKER" \
+        '[.notes[]? | select((.body // "") | contains($m)) | .date // ""] | last // ""' \
+        2>/dev/null | tr -d '\n')
+      if [ -n "$FORGE_LAST" ]; then
+        # Notes posted AFTER the marker, excluding our own (any subsequent
+        # autofix note is by us re-running; ignore those).
+        NEW_NOTES_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" --arg m "$FORGE_MARKER" \
+          '[.notes[]? | select(((.date // "") > $cutoff) and (((.body // "") | contains($m)) | not))] | length' \
+          2>/dev/null | tr -d '\n')
+        # History events (status/resolution/assignee/severity/desc edits etc.)
+        # dated after the marker.
+        NEW_HIST_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" \
+          '[.history[]? | select((.date // "") > $cutoff)] | length' \
+          2>/dev/null | tr -d '\n')
+        NEW_NOTES_COUNT="${NEW_NOTES_COUNT:-0}"
+        NEW_HIST_COUNT="${NEW_HIST_COUNT:-0}"
+        if [ "$NEW_NOTES_COUNT" = "0" ] && [ "$NEW_HIST_COUNT" = "0" ]; then
+          {
+            echo ""
+            echo "─── SKIP: nothing new since Forge's last run ───"
+            echo "Last Forge note:       $FORGE_LAST"
+            echo "Human notes since:     $NEW_NOTES_COUNT"
+            echo "History events since:  $NEW_HIST_COUNT"
+            echo "Downstream (triage / fix / push-mr / mark-fixed / notify) will skip."
+          } >&2
+          echo "__SKIP__"
+          exit 0
+        fi
+        {
+          echo ""
+          echo "─── Incremental run: changes since Forge's last note ───"
+          echo "Last Forge note @ $FORGE_LAST"
+          echo "  new human notes:    $NEW_NOTES_COUNT"
+          echo "  new history events: $NEW_HIST_COUNT"
+        } >&2
+      fi
       echo "RESOLUTION=$RESOLUTION"
       echo "DESCRIPTION_B64=$DESC_B64"
       echo "ADDITIONAL_INFO_B64=$ADDL_B64"

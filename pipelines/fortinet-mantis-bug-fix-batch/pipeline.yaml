@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.3.0"
+version: "0.4.0"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -339,6 +339,44 @@ nodes:
       echo "ASSIGNEE=$ASSIGNEE"
       echo "QA_ASSIGNEE=$QA_ASSIGNEE"
       echo "STATUS=$STATUS"
+
+      # ── Idempotency gate ─────────────────────────────────────────
+      # Skip this iteration's downstream if Forge already processed
+      # this bug and nothing changed since. Marker = `ref: autofix-<id>`
+      # footer written by notify-mantis. See single-bug version for
+      # rationale.
+      FORGE_MARKER="ref: autofix-${BUG_ID}"
+      FORGE_LAST=$(echo "$BUG" | jq -r --arg m "$FORGE_MARKER" \
+        '[.notes[]? | select((.body // "") | contains($m)) | .date // ""] | last // ""' \
+        2>/dev/null | tr -d '\n')
+      if [ -n "$FORGE_LAST" ]; then
+        NEW_NOTES_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" --arg m "$FORGE_MARKER" \
+          '[.notes[]? | select(((.date // "") > $cutoff) and (((.body // "") | contains($m)) | not))] | length' \
+          2>/dev/null | tr -d '\n')
+        NEW_HIST_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" \
+          '[.history[]? | select((.date // "") > $cutoff)] | length' \
+          2>/dev/null | tr -d '\n')
+        NEW_NOTES_COUNT="${NEW_NOTES_COUNT:-0}"
+        NEW_HIST_COUNT="${NEW_HIST_COUNT:-0}"
+        if [ "$NEW_NOTES_COUNT" = "0" ] && [ "$NEW_HIST_COUNT" = "0" ]; then
+          {
+            echo ""
+            echo "─── SKIP iter: bug #${BUG_ID} unchanged since Forge's last run ───"
+            echo "Last Forge note:       $FORGE_LAST"
+            echo "Human notes since:     $NEW_NOTES_COUNT"
+            echo "History events since:  $NEW_HIST_COUNT"
+          } >&2
+          echo "__SKIP__"
+          exit 0
+        fi
+        {
+          echo ""
+          echo "─── Incremental run on bug #${BUG_ID}: changes since Forge's last note ───"
+          echo "Last Forge note @ $FORGE_LAST"
+          echo "  new human notes:    $NEW_NOTES_COUNT"
+          echo "  new history events: $NEW_HIST_COUNT"
+        } >&2
+      fi
       echo "RESOLUTION=$RESOLUTION"
       echo "DESCRIPTION_B64=$DESC_B64"
       echo "ADDITIONAL_INFO_B64=$ADDL_B64"
