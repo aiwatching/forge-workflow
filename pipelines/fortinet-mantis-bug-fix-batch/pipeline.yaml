@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.0"
+version: "0.4.1"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -831,7 +831,11 @@ nodes:
     # checkout).
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
     worktree: false
-    prompt: >
+    # `prompt: |` (literal block scalar) — preserves newlines verbatim.
+    # The extract_username() shell function below relies on per-line
+    # boundaries; `prompt: >` (folded) would join consecutive non-empty
+    # lines with spaces and break the function definition.
+    prompt: |
       set -e
 
       INFO=$'{{nodes.resolve.outputs.info}}'

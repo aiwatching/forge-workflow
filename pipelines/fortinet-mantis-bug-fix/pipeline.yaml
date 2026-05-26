@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.0"
+version: "0.7.1"
 
 input:
   project:
@@ -832,7 +832,12 @@ nodes:
     # checkout).
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
     worktree: false
-    prompt: >
+    # `prompt: |` (literal block scalar) — preserves newlines verbatim.
+    # The extract_username() shell function below relies on per-line
+    # boundaries; `prompt: >` (folded) would join consecutive non-empty
+    # lines with spaces and break the function definition (and the
+    # surrounding if/else blocks). Pattern repeated for the batch yaml.
+    prompt: |
       set -e
 
       INFO=$'{{nodes.resolve.outputs.info}}'
