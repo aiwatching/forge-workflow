@@ -71,10 +71,16 @@ this repo's main branch (default in `lib/settings.ts`). On Sync:
 
 ## Current contents
 
-| Recipe | What it does |
-|---|---|
-| `gitlab-mr-watch` | Watch new comments on a GitLab MR; dispatches `mr-review-fix` per new note |
+(Recipes have been removed along with the deprecated Jobs module.
+Use Schedules + Fire-button pipelines instead.)
 
 | Pipeline | What it does |
 |---|---|
-| `mr-review-fix` | Takes a review comment → Claude reads diff → fixes → commits + pushes → replies |
+| `fortinet-mantis-bug-fix` | Single Fortinet Mantis bug → worktree → Claude fix → MR → notify |
+| `fortinet-mantis-bug-fix-batch` | N bug ids per Fire (for_each loop, no child dispatch) |
+| `fortinet-mr-review` | Single Fortinet GitLab MR — read all comments, triage, push fixup, reply, notify |
+| `fortinet-mr-review-batch` | N MR iids OR author/labels filter (for_each.before resolves at run time) |
+| `fortinet-mr-pre-review` | Pre-review pass on a Fortinet MR — analyze + post markdown comment |
+| `issue-fix-and-review` | GitHub issue scanner |
+| `multi-agent-collaboration` | Multi-agent conversation demo |
+| `review-mr` | GitHub PR auto-review |
