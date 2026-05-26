@@ -27,7 +27,7 @@ description: |
     - all MRs in the batch live in the same gitlab_project_id (cross-
       project batches need to be split into separate Fire's)
 
-version: "0.3.0"
+version: "0.3.1"
 
 for_each:
   source: "{{nodes.list-iids.outputs.iids}}"
@@ -150,7 +150,8 @@ nodes:
         fi
 
         echo "[list-iids] filter query: ${Q}" >&2
-        IIDS=$(glab api "projects/${PID_ENC}/merge_requests?${Q}" | jq -r '.[].iid' | paste -sd,)
+        # tr+sed instead of `paste -sd,` — BSD paste (macOS) rejects fused -sd
+        IIDS=$(glab api "projects/${PID_ENC}/merge_requests?${Q}" | jq -r '.[].iid' | tr '\n' ',' | sed 's/,$//')
         SRC="filter (author=${AUTHOR:-—} labels=${LABELS:-—} limit=${LIMIT})"
       fi
 
