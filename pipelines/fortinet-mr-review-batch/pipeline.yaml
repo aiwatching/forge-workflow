@@ -21,7 +21,7 @@ description: |
     - fortinet-mr-review pipeline installed locally
     - GitLab project must have the filter labels created (Settings → Labels)
 
-version: "0.1.0"
+version: "0.1.1"
 
 input:
   project:
@@ -60,12 +60,28 @@ input:
     enum: [sequential, parallel]
     label: "Dispatch mode"
   user_prompt:
-    description: "Triage policy forwarded to each fortinet-mr-review run. Leave blank to use mr-review's built-in default."
+    description: "Triage policy forwarded to each fortinet-mr-review run. Default matches mr-review's own default verbatim — edit here to override for this batch."
     type: string
     required: false
     multiline: true
-    default: ""
-    label: "Per-MR review policy (optional)"
+    label: "Per-MR review policy"
+    default: |
+      ACT on any concrete code change request from a human reviewer
+      (missing cleanup, refactor with clear rationale, bug, missing
+      test, security concern) AND on 'error' findings from code
+      review bots.
+
+      SKIP approvals / lgtm / style-nits / questions / bot warnings
+      about MR metadata.
+
+      NOOP (do nothing, post no reply) when the latest non-system
+      comment was authored by Forge itself (body starts with
+      '🤖 Forge:') OR by the same GitLab user this Job runs as.
+      Nothing has changed since the last Forge run.
+
+      CLOSE only when reviewers explicitly call for abandonment
+      (duplicate MR, wrong approach, work superseded). Be
+      conservative — when in doubt, skip, never close.
 
 nodes:
   # ── 1. List matching MRs ──────────────────────────────────
@@ -153,27 +169,15 @@ nodes:
         local mr_dir="{{run.tmp_dir}}/mr-${iid}"
         mkdir -p "$mr_dir"
 
-        # Build child input. user_prompt is included only when non-empty
-        # so the child inherits its own default otherwise.
         local body
-        if [ -n "${USER_PROMPT// /}" ]; then
-          body=$(jq -nc \
-            --arg w "fortinet-mr-review" \
-            --arg proj "{{input.project}}" \
-            --arg mr_url "$mr_url" \
-            --arg iid "$iid" \
-            --arg gpi "{{input.gitlab_project_id}}" \
-            --arg prompt "$USER_PROMPT" \
-            '{workflow:$w, input:{project:$proj, mr_url:$mr_url, mr_iid:$iid, gitlab_project_id:$gpi, user_prompt:$prompt}}')
-        else
-          body=$(jq -nc \
-            --arg w "fortinet-mr-review" \
-            --arg proj "{{input.project}}" \
-            --arg mr_url "$mr_url" \
-            --arg iid "$iid" \
-            --arg gpi "{{input.gitlab_project_id}}" \
-            '{workflow:$w, input:{project:$proj, mr_url:$mr_url, mr_iid:$iid, gitlab_project_id:$gpi}}')
-        fi
+        body=$(jq -nc \
+          --arg w "fortinet-mr-review" \
+          --arg proj "{{input.project}}" \
+          --arg mr_url "$mr_url" \
+          --arg iid "$iid" \
+          --arg gpi "{{input.gitlab_project_id}}" \
+          --arg prompt "$USER_PROMPT" \
+          '{workflow:$w, input:{project:$proj, mr_url:$mr_url, mr_iid:$iid, gitlab_project_id:$gpi, user_prompt:$prompt}}')
 
         local resp
         resp=$(curl -sS -X POST http://127.0.0.1:8403/api/pipelines \
