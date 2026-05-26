@@ -1,0 +1,296 @@
+name: fortinet-mr-review-batch
+description: |
+  Batch over the first N open GitLab MRs matching filters and dispatch
+  each one through `fortinet-mr-review` as its own pipeline run. Each
+  child MR review shows up as a separate run in Forge UI so you can
+  drill into individual results; this batch only orchestrates list +
+  dispatch + wait + aggregate report.
+
+  Sequential mode (default) processes MRs one at a time — safe for
+  Claude rate limits + avoids worktree collisions when two MRs share
+  the same source/target branch path. Parallel mode dispatches all at
+  once and waits in parallel.
+
+  Per-MR tracking lives in `{{run.tmp_dir}}/mr-<iid>/`:
+    - child-pipeline-id (one line, points to the child run)
+    - status (pending / done / failed / cancelled / skipped)
+    - result.md (first ~10 lines of child's reply output)
+
+  Requires:
+    - glab CLI authenticated to the GitLab host (for listing + @me)
+    - fortinet-mr-review pipeline installed locally
+    - GitLab project must have the filter labels created (Settings → Labels)
+
+version: "0.1.0"
+
+input:
+  project:
+    description: "Local Forge project name (e.g. FortiNAC)"
+    type: string
+    required: true
+    label: "Project"
+  gitlab_project_id:
+    description: "GitLab project path or numeric id (e.g. fortinac/FortiNAC)"
+    type: string
+    required: true
+    label: "GitLab project id"
+  author:
+    description: "MR author filter — '@me' resolves via `glab api user`, or a literal username."
+    type: string
+    required: false
+    default: "@me"
+    label: "Author"
+  labels:
+    description: "Required labels, comma-separated (AND-matched by GitLab)."
+    type: string
+    required: false
+    default: "forge:stage/needs-review"
+    label: "Required labels"
+  limit:
+    description: "Max MRs to process per run."
+    type: string
+    required: false
+    default: "5"
+    label: "Limit"
+  mode:
+    description: "sequential (one MR at a time) — safer, slower. parallel — all dispatched together."
+    type: string
+    required: false
+    default: sequential
+    enum: [sequential, parallel]
+    label: "Dispatch mode"
+  user_prompt:
+    description: "Triage policy forwarded to each fortinet-mr-review run. Leave blank to use mr-review's built-in default."
+    type: string
+    required: false
+    multiline: true
+    default: ""
+    label: "Per-MR review policy (optional)"
+
+nodes:
+  # ── 1. List matching MRs ──────────────────────────────────
+  list-mrs:
+    project: "{{input.project}}"
+    worktree: false
+    mode: shell
+    prompt: |
+      set -e
+      PROJECT_ID="{{input.gitlab_project_id}}"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
+      AUTHOR="{{input.author}}"
+      LABELS="{{input.labels}}"
+      LIMIT="{{input.limit}}"
+
+      mkdir -p "{{run.tmp_dir}}"
+      MRS_JSON="{{run.tmp_dir}}/mrs.json"
+
+      # Resolve @me via glab so the filter gets a real username.
+      if [ "$AUTHOR" = "@me" ]; then
+        AUTHOR=$(glab api user 2>/dev/null | jq -r '.username // empty')
+        if [ -z "$AUTHOR" ]; then
+          echo "ERROR: author=@me but 'glab api user' returned empty — glab not authenticated?" >&2
+          exit 1
+        fi
+      fi
+
+      QS="state=opened&author_username=${AUTHOR}&labels=${LABELS}&per_page=${LIMIT}&order_by=created_at&sort=desc"
+      glab api "projects/${PID_ENC}/merge_requests?${QS}" \
+        | jq -c "[.[0:${LIMIT}] | .[] | {iid, web_url, title, source_branch, target_branch, author: .author.username}]" \
+        > "$MRS_JSON"
+
+      MR_COUNT=$(jq 'length' "$MRS_JSON")
+
+      echo "AUTHOR_RESOLVED=${AUTHOR}"
+      echo "LABELS=${LABELS}"
+      echo "LIMIT=${LIMIT}"
+      echo "MR_COUNT=${MR_COUNT}"
+
+      echo ""
+      echo "=== RESULT ==="
+      echo "Author:    @${AUTHOR}"
+      echo "Labels:    ${LABELS}"
+      echo "Limit:     ${LIMIT}"
+      echo "MRs found: ${MR_COUNT}"
+      if [ "$MR_COUNT" -eq 0 ]; then
+        echo ""
+        echo "No matching MRs — downstream nodes will skip dispatch."
+      else
+        echo ""
+        jq -r '.[] | "  - !\(.iid) (@\(.author)) \(.title)"' "$MRS_JSON"
+      fi
+    outputs:
+      - name: list
+        extract: stdout
+
+  # ── 2. Dispatch a child fortinet-mr-review per MR, wait for all ─
+  dispatch-and-wait:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [list-mrs]
+    mode: shell
+    prompt: |
+      set -e
+      INFO=$'{{nodes.list-mrs.outputs.list}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
+
+      MODE="{{input.mode}}"
+      MRS_JSON="{{run.tmp_dir}}/mrs.json"
+
+      if [ "${MR_COUNT:-0}" -eq 0 ]; then
+        echo "SKIP — no MRs to dispatch"
+        echo ""
+        echo "=== RESULT ==="
+        echo "Skipped (no matching MRs)."
+        exit 0
+      fi
+
+      # ANSI-C unescape — multi-line user_prompt from Forge template engine.
+      USER_PROMPT=$'{{input.user_prompt}}'
+
+      dispatch_one() {
+        local iid="$1"
+        local mr_url="$2"
+        local mr_dir="{{run.tmp_dir}}/mr-${iid}"
+        mkdir -p "$mr_dir"
+
+        # Build child input. user_prompt is included only when non-empty
+        # so the child inherits its own default otherwise.
+        local body
+        if [ -n "${USER_PROMPT// /}" ]; then
+          body=$(jq -nc \
+            --arg w "fortinet-mr-review" \
+            --arg proj "{{input.project}}" \
+            --arg mr_url "$mr_url" \
+            --arg iid "$iid" \
+            --arg gpi "{{input.gitlab_project_id}}" \
+            --arg prompt "$USER_PROMPT" \
+            '{workflow:$w, input:{project:$proj, mr_url:$mr_url, mr_iid:$iid, gitlab_project_id:$gpi, user_prompt:$prompt}}')
+        else
+          body=$(jq -nc \
+            --arg w "fortinet-mr-review" \
+            --arg proj "{{input.project}}" \
+            --arg mr_url "$mr_url" \
+            --arg iid "$iid" \
+            --arg gpi "{{input.gitlab_project_id}}" \
+            '{workflow:$w, input:{project:$proj, mr_url:$mr_url, mr_iid:$iid, gitlab_project_id:$gpi}}')
+        fi
+
+        local resp
+        resp=$(curl -sS -X POST http://127.0.0.1:8403/api/pipelines \
+          -H 'content-type: application/json' --data "$body" 2>&1)
+        local child_id
+        child_id=$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)
+        if [ -z "$child_id" ]; then
+          printf '%s\n' "$resp" > "$mr_dir/dispatch.err"
+          echo "failed" > "$mr_dir/status"
+          echo "DISPATCH FAILED for MR !$iid — see ${mr_dir}/dispatch.err" >&2
+          return 1
+        fi
+        printf '%s\n' "$child_id" > "$mr_dir/child-pipeline-id"
+        echo "pending" > "$mr_dir/status"
+        echo "DISPATCHED MR !$iid → pipeline ${child_id}"
+      }
+
+      wait_one() {
+        local iid="$1"
+        local mr_dir="{{run.tmp_dir}}/mr-${iid}"
+        local child_id
+        child_id=$(cat "$mr_dir/child-pipeline-id" 2>/dev/null)
+        if [ -z "$child_id" ]; then
+          [ ! -f "$mr_dir/status" ] && echo "skipped" > "$mr_dir/status"
+          return
+        fi
+        # Poll the child run every 10s. No hard timeout — fortinet-mr-review's
+        # own per-node retries / cancel are the upper bound.
+        while true; do
+          local resp
+          resp=$(curl -sS "http://127.0.0.1:8403/api/pipelines/${child_id}" 2>/dev/null)
+          local status
+          status=$(echo "$resp" | jq -r '.status // "unknown"' 2>/dev/null)
+          if [ "$status" = "done" ] || [ "$status" = "failed" ] || [ "$status" = "cancelled" ]; then
+            echo "$status" > "$mr_dir/status"
+            echo "$resp" | jq -r '.nodes.reply.outputs.result // "(no reply output)"' 2>/dev/null \
+              | head -10 > "$mr_dir/result.md"
+            echo "MR !$iid → $status"
+            return
+          fi
+          sleep 10
+        done
+      }
+
+      # bash 3.2-compat (no mapfile on macOS default bash).
+      IIDS=()
+      URLS=()
+      while IFS= read -r v; do IIDS+=("$v"); done < <(jq -r '.[].iid' "$MRS_JSON")
+      while IFS= read -r v; do URLS+=("$v"); done < <(jq -r '.[].web_url' "$MRS_JSON")
+
+      if [ "$MODE" = "parallel" ]; then
+        for i in "${!IIDS[@]}"; do
+          dispatch_one "${IIDS[$i]}" "${URLS[$i]}" || true
+        done
+        for iid in "${IIDS[@]}"; do
+          wait_one "$iid" &
+        done
+        wait
+      else
+        # sequential
+        for i in "${!IIDS[@]}"; do
+          dispatch_one "${IIDS[$i]}" "${URLS[$i]}" || continue
+          wait_one "${IIDS[$i]}"
+        done
+      fi
+
+      echo ""
+      echo "=== RESULT ==="
+      echo "Dispatched + awaited ${MR_COUNT} MR(s) in ${MODE} mode."
+    outputs:
+      - name: log
+        extract: stdout
+
+  # ── 3. Aggregate per-MR status into a final summary ─────────
+  report:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [dispatch-and-wait]
+    mode: shell
+    prompt: |
+      set +e
+      OK=0
+      FAIL=0
+      SKIP=0
+      LINES=""
+
+      if [ -d "{{run.tmp_dir}}" ]; then
+        for d in "{{run.tmp_dir}}"/mr-*/; do
+          [ -d "$d" ] || continue
+          iid=$(basename "$d" | sed 's/^mr-//')
+          status=$(cat "$d/status" 2>/dev/null || echo unknown)
+          result=$(head -1 "$d/result.md" 2>/dev/null)
+          case "$status" in
+            done)              OK=$((OK+1)) ;;
+            failed)            FAIL=$((FAIL+1)) ;;
+            cancelled|skipped) SKIP=$((SKIP+1)) ;;
+          esac
+          line="  - MR !${iid}: ${status}"
+          [ -n "$result" ] && line="${line} — ${result}"
+          LINES="${LINES}${line}"$'\n'
+        done
+      fi
+
+      SUMMARY_FILE="{{run.tmp_dir}}/summary.md"
+      {
+        echo "# Batch MR review summary"
+        echo ""
+        echo "- Done:      ${OK}"
+        echo "- Failed:    ${FAIL}"
+        echo "- Skipped:   ${SKIP}"
+        echo ""
+        echo "Per-MR:"
+        printf '%s' "$LINES"
+      } > "$SUMMARY_FILE"
+
+      echo "=== RESULT ==="
+      cat "$SUMMARY_FILE"
+    outputs:
+      - name: summary
+        extract: stdout
