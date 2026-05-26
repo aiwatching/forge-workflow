@@ -1,10 +1,10 @@
 {
   "name": "fortinet-mr-review-batch",
   "display_name": "Fortinet · MR Review (batch)",
-  "description": "List the first N open GitLab MRs by author + labels, dispatch each through fortinet-mr-review as its own pipeline run, sequential or parallel, then aggregate. Single fire processes a backlog without re-firing fortinet-mr-review by hand for each MR.",
-  "version": "0.1.1",
+  "description": "Batch the full fortinet-mr-review flow (ingest → triage → fix → reply → cleanup) over N MR iids via framework for_each. One pipeline run = N iterations, full per-iter step history visible inline. Replaces the v0.1.x HTTP child-dispatch design.",
+  "version": "0.2.0",
   "author": "forge",
-  "tags": ["fortinet", "gitlab", "mr", "review", "batch"],
+  "tags": ["fortinet", "gitlab", "mr", "review", "batch", "for_each"],
   "score": 0,
   "rating": 0
 }
