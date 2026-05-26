@@ -1,8 +1,8 @@
 {
   "name": "fortinet-mr-review-batch",
   "display_name": "Fortinet · MR Review (batch)",
-  "description": "Batch the full fortinet-mr-review flow (ingest → triage → fix → reply → cleanup) over N MR iids via framework for_each. One pipeline run = N iterations, full per-iter step history visible inline. Replaces the v0.1.x HTTP child-dispatch design.",
-  "version": "0.2.0",
+  "description": "Batch the full fortinet-mr-review flow (ingest → triage → fix → reply → cleanup) over N MRs via framework for_each + before. Two input modes: explicit mr_iids CSV, OR author/labels/limit filter resolved at run time by a setup node. Replaces v0.2.0 (iid-only) and v0.1.x (HTTP child-dispatch).",
+  "version": "0.3.0",
   "author": "forge",
   "tags": ["fortinet", "gitlab", "mr", "review", "batch", "for_each"],
   "score": 0,
