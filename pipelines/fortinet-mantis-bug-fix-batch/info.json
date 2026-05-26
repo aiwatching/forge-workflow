@@ -1,0 +1,10 @@
+{
+  "name": "fortinet-mantis-bug-fix-batch",
+  "display_name": "Fortinet · Mantis Bug Fix (batch)",
+  "description": "Comma-separated list of Mantis bug ids — dispatches each through fortinet-mantis-bug-fix as its own pipeline run, sequential (default) or parallel, then aggregates a per-bug status report.",
+  "version": "0.1.0",
+  "author": "forge",
+  "tags": ["fortinet", "mantis", "bug-fix", "batch", "claude-code"],
+  "score": 0,
+  "rating": 0
+}

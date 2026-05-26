@@ -1,0 +1,319 @@
+name: fortinet-mantis-bug-fix-batch
+description: |
+  Process N Mantis bugs in one fire — dispatch each through
+  `fortinet-mantis-bug-fix` as its own pipeline run. Each child runs
+  the full bug → fix → MR → notify cycle independently and shows up
+  as a separate run in Forge UI.
+
+  Sequential mode (default) processes bugs one at a time — safe for
+  Claude rate limits + avoids git worktree branch collisions. Parallel
+  mode dispatches all at once and waits in parallel.
+
+  Per-bug tracking lives in `{{run.tmp_dir}}/mantis-<bug_id>/`:
+    - child-pipeline-id (one line, points to the child run)
+    - status (pending / done / failed / cancelled / skipped)
+    - result.md (first ~10 lines of child's push-and-mr output)
+
+  Requires:
+    - fortinet-mantis-bug-fix pipeline installed locally
+    - all the same prerequisites it has (glab auth, mantis connector
+      reachable for resolve / notify-mantis, etc.)
+
+version: "0.1.0"
+
+input:
+  project:
+    description: "Local Forge project name (e.g. FortiNAC)"
+    type: string
+    required: true
+    label: "Project"
+  bug_ids:
+    description: "Comma-separated Mantis bug ids (e.g. '1213844, 1234567'). Whitespace around commas OK."
+    type: string
+    required: true
+    label: "Bug IDs (comma-separated)"
+  base_branch:
+    description: "Base branch each child forks from (e.g. main, 7.6, release/7.6)"
+    type: string
+    required: true
+    default: main
+    label: "Base branch"
+  mode:
+    description: "sequential (one bug at a time) — safer, slower. parallel — all dispatched together."
+    type: string
+    required: false
+    default: sequential
+    enum: [sequential, parallel]
+    label: "Dispatch mode"
+  user_prompt:
+    description: "Fix focus prompt forwarded to each child. Default matches fortinet-mantis-bug-fix's own default — edit here to override for this batch."
+    type: string
+    multiline: true
+    label: "Fix focus prompt"
+    default: |
+      Focus the fix on:
+        - Minimal change set — only what the bug describes; don't
+          opportunistically refactor adjacent code
+        - Add or update tests if a logical defect is fixed
+        - Keep style consistent with the surrounding file (don't
+          reformat untouched lines)
+        - If the bug is ambiguous or could mean several things, pick
+          the most conservative interpretation and call it out in
+          the MR description
+        - NEVER commit secrets, hard-coded paths, or temp logging
+
+      If multiple files seem affected, fix the obvious one and list
+      the others in the MR description as "follow-ups" for the human
+      reviewer to confirm.
+  mr_body_template:
+    description: "GitLab MR description template. Placeholders: {bug_id} {summary} {description} {claude_summary} {diff_stat}"
+    type: string
+    multiline: true
+    label: "MR body template"
+    default: |
+      ## Purpose
+      Fix Mantis bug #{bug_id} — {summary}
+
+      ## Mantis
+      MANTIS-{bug_id}
+
+      ## Description
+      {description}
+
+      ## Technical Description
+      {claude_summary}
+
+      ## Files changed
+      {diff_stat}
+
+      ## Testing Done
+      TBD — please verify in CI + smoke test.
+  mr_reviewer:
+    description: "Comma-separated GitLab usernames (without @) for MR reviewers. Applies to every child MR. Optional."
+    type: string
+    label: "MR reviewers (comma-separated usernames)"
+    default: ""
+  teams_message_template:
+    description: "Teams notification template. Placeholders: {bug_id} {summary} {role} {mr_url} {who}"
+    type: string
+    multiline: true
+    label: "Teams message template"
+    default: |
+      🤖 Forge auto-fix for Mantis #{bug_id} ({role}):
+      {summary}
+      MR: {mr_url}
+      /cc @{who}
+
+nodes:
+  # ── 1. Parse + validate the comma-separated bug id list ──
+  parse-ids:
+    project: "{{input.project}}"
+    worktree: false
+    mode: shell
+    prompt: |
+      set -e
+      BUG_IDS_RAW="{{input.bug_ids}}"
+
+      mkdir -p "{{run.tmp_dir}}"
+      IDS_FILE="{{run.tmp_dir}}/bug-ids.txt"
+
+      # Split on commas, trim, skip blanks + non-numeric.
+      : > "$IDS_FILE"
+      IFS=',' read -ra __IDS <<< "$BUG_IDS_RAW"
+      for __i in "${__IDS[@]}"; do
+        __i=$(echo "$__i" | xargs)  # trim
+        if [[ "$__i" =~ ^[0-9]+$ ]]; then
+          echo "$__i" >> "$IDS_FILE"
+        elif [ -n "$__i" ]; then
+          echo "WARN: skipping non-numeric bug id '$__i'" >&2
+        fi
+      done
+
+      BUG_COUNT=$(wc -l < "$IDS_FILE" | tr -d ' ')
+
+      echo "BUG_COUNT=${BUG_COUNT}"
+
+      echo ""
+      echo "=== RESULT ==="
+      echo "Parsed ${BUG_COUNT} bug id(s) from input:"
+      if [ "$BUG_COUNT" -eq 0 ]; then
+        echo "(none — downstream nodes will skip dispatch)"
+      else
+        sed 's/^/  - #/' "$IDS_FILE"
+      fi
+    outputs:
+      - name: ctx
+        extract: stdout
+
+  # ── 2. Dispatch a child fortinet-mantis-bug-fix per bug, wait ──
+  dispatch-and-wait:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [parse-ids]
+    mode: shell
+    prompt: |
+      set -e
+      INFO=$'{{nodes.parse-ids.outputs.ctx}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
+
+      MODE="{{input.mode}}"
+      IDS_FILE="{{run.tmp_dir}}/bug-ids.txt"
+
+      if [ "${BUG_COUNT:-0}" -eq 0 ]; then
+        echo "SKIP — no bug ids to dispatch"
+        echo ""
+        echo "=== RESULT ==="
+        echo "Skipped (parse-ids produced 0 bugs)."
+        exit 0
+      fi
+
+      # ANSI-C unescape multi-line templates so jq --arg gets real text.
+      USER_PROMPT=$'{{input.user_prompt}}'
+      MR_BODY_TPL=$'{{input.mr_body_template}}'
+      TEAMS_TPL=$'{{input.teams_message_template}}'
+
+      dispatch_one() {
+        local bug_id="$1"
+        local mr_dir="{{run.tmp_dir}}/mantis-${bug_id}"
+        mkdir -p "$mr_dir"
+
+        local body
+        body=$(jq -nc \
+          --arg w "fortinet-mantis-bug-fix" \
+          --arg proj "{{input.project}}" \
+          --argjson bug "$bug_id" \
+          --arg base "{{input.base_branch}}" \
+          --arg prompt "$USER_PROMPT" \
+          --arg mr_body "$MR_BODY_TPL" \
+          --arg mr_reviewer "{{input.mr_reviewer}}" \
+          --arg teams "$TEAMS_TPL" \
+          '{workflow:$w, input:{
+            project:$proj,
+            bug_id:$bug,
+            base_branch:$base,
+            user_prompt:$prompt,
+            mr_body_template:$mr_body,
+            mr_reviewer:$mr_reviewer,
+            teams_message_template:$teams
+          }}')
+
+        local resp
+        resp=$(curl -sS -X POST http://127.0.0.1:8403/api/pipelines \
+          -H 'content-type: application/json' --data "$body" 2>&1)
+        local child_id
+        child_id=$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)
+        if [ -z "$child_id" ]; then
+          printf '%s\n' "$resp" > "$mr_dir/dispatch.err"
+          echo "failed" > "$mr_dir/status"
+          echo "DISPATCH FAILED for bug #$bug_id — see ${mr_dir}/dispatch.err" >&2
+          return 1
+        fi
+        printf '%s\n' "$child_id" > "$mr_dir/child-pipeline-id"
+        echo "pending" > "$mr_dir/status"
+        echo "DISPATCHED bug #$bug_id → pipeline ${child_id}"
+      }
+
+      wait_one() {
+        local bug_id="$1"
+        local mr_dir="{{run.tmp_dir}}/mantis-${bug_id}"
+        local child_id
+        child_id=$(cat "$mr_dir/child-pipeline-id" 2>/dev/null)
+        if [ -z "$child_id" ]; then
+          [ ! -f "$mr_dir/status" ] && echo "skipped" > "$mr_dir/status"
+          return
+        fi
+        # Poll child every 15s; bug-fix runs longer than mr-review.
+        while true; do
+          local resp
+          resp=$(curl -sS "http://127.0.0.1:8403/api/pipelines/${child_id}" 2>/dev/null)
+          local status
+          status=$(echo "$resp" | jq -r '.status // "unknown"' 2>/dev/null)
+          if [ "$status" = "done" ] || [ "$status" = "failed" ] || [ "$status" = "cancelled" ]; then
+            echo "$status" > "$mr_dir/status"
+            # Prefer push-and-mr's result line (has MR URL); fall back to mark-fixed / notify-mantis.
+            echo "$resp" | jq -r '
+              .nodes["push-and-mr"].outputs.mr //
+              .nodes["mark-fixed"].outputs.result //
+              .nodes["notify-mantis"].outputs.result //
+              "(no result output)"' 2>/dev/null \
+              | head -10 > "$mr_dir/result.md"
+            echo "bug #$bug_id → $status"
+            return
+          fi
+          sleep 15
+        done
+      }
+
+      # bash 3.2-compat (mac default — no mapfile).
+      IDS=()
+      while IFS= read -r v; do IDS+=("$v"); done < "$IDS_FILE"
+
+      if [ "$MODE" = "parallel" ]; then
+        for bug_id in "${IDS[@]}"; do
+          dispatch_one "$bug_id" || true
+        done
+        for bug_id in "${IDS[@]}"; do
+          wait_one "$bug_id" &
+        done
+        wait
+      else
+        for bug_id in "${IDS[@]}"; do
+          dispatch_one "$bug_id" || continue
+          wait_one "$bug_id"
+        done
+      fi
+
+      echo ""
+      echo "=== RESULT ==="
+      echo "Dispatched + awaited ${BUG_COUNT} bug(s) in ${MODE} mode."
+    outputs:
+      - name: log
+        extract: stdout
+
+  # ── 3. Aggregate per-bug status into a final summary ──
+  report:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [dispatch-and-wait]
+    mode: shell
+    prompt: |
+      set +e
+      OK=0
+      FAIL=0
+      SKIP=0
+      LINES=""
+
+      if [ -d "{{run.tmp_dir}}" ]; then
+        for d in "{{run.tmp_dir}}"/mantis-*/; do
+          [ -d "$d" ] || continue
+          bug_id=$(basename "$d" | sed 's/^mantis-//')
+          status=$(cat "$d/status" 2>/dev/null || echo unknown)
+          result=$(head -1 "$d/result.md" 2>/dev/null)
+          case "$status" in
+            done)              OK=$((OK+1)) ;;
+            failed)            FAIL=$((FAIL+1)) ;;
+            cancelled|skipped) SKIP=$((SKIP+1)) ;;
+          esac
+          line="  - bug #${bug_id}: ${status}"
+          [ -n "$result" ] && line="${line} — ${result}"
+          LINES="${LINES}${line}"$'\n'
+        done
+      fi
+
+      SUMMARY_FILE="{{run.tmp_dir}}/summary.md"
+      {
+        echo "# Batch Mantis bug-fix summary"
+        echo ""
+        echo "- Done:      ${OK}"
+        echo "- Failed:    ${FAIL}"
+        echo "- Skipped:   ${SKIP}"
+        echo ""
+        echo "Per-bug:"
+        printf '%s' "$LINES"
+      } > "$SUMMARY_FILE"
+
+      echo "=== RESULT ==="
+      cat "$SUMMARY_FILE"
+    outputs:
+      - name: summary
+        extract: stdout
