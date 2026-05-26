@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.5.3"
+version: "0.5.4"
 
 input:
   project:
@@ -301,7 +301,10 @@ nodes:
       REPRO=$(echo "$BUG" | jq -r '.reproducibility // ""' | tr -d '\n')
       PRIORITY=$(echo "$BUG" | jq -r '.priority // ""' | tr -d '\n')
       REPORTER=$(echo "$BUG" | jq -r '.reporter // ""' | tr -d '\n')
-      ASSIGNEE=$(echo "$BUG" | jq -r '.handler // .assigned_to // ""' | tr -d '\n')
+      # Mantis connector returns `.assignee` (from HTML "Assigned To" column);
+      # `.handler` / `.assigned_to` were legacy guesses that never matched.
+      # Keep them as fallback in case a future Mantis API version uses them.
+      ASSIGNEE=$(echo "$BUG" | jq -r '.assignee // .handler // .assigned_to // ""' | tr -d '\n')
       DESC_B64=$(echo "$BUG" | jq -r '.description // ""' | base64 | tr -d '\n')
       ADDL_B64=$(echo "$BUG" | jq -r '.additional_information // ""' | base64 | tr -d '\n')
       # Notes with author + date + body, separated by ─── for readability.
