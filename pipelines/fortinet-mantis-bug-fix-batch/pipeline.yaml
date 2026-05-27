@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.4"
+version: "0.4.5"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -210,7 +210,13 @@ nodes:
         #    and not empty".
         if [ -d "$WORKTREE_DIR" ]; then
           git worktree remove --force "$WORKTREE_DIR" 2>/dev/null || true
-          rm -rf "$WORKTREE_DIR" 2>/dev/null || true
+          chmod -R u+w "$WORKTREE_DIR" 2>/dev/null || true
+          rm -rf "$WORKTREE_DIR"
+          if [ -e "$WORKTREE_DIR" ]; then
+            echo "ERROR: failed to remove pre-existing $WORKTREE_DIR — contents:" >&2
+            ls -la "$WORKTREE_DIR" >&2
+            exit 1
+          fi
         fi
         # 2. Drop stale worktree registrations + any other worktree pinning
         #    our branch. Without (3), "fatal: <branch> already used by
