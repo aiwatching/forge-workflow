@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.11"
+version: "0.7.12"
 
 input:
   project:
@@ -1036,6 +1036,17 @@ nodes:
       import sys
 
       tpl, bug_id, summary, description, claude, diff_stat = sys.argv[1:7]
+
+      # Per-section length caps. The remote GitLab project rejects MR
+      # description fields > 512 chars per section ("Description cannot
+      # be more than 512 characters"). Truncate each value before
+      # substitution with an ellipsis marker. Numbers chosen so a typical
+      # rendered section fits comfortably under 512 incl. heading text.
+      summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
+
+      description = (description[:499].rstrip() + '…') if len(description) > 500 else description
+
+      claude = (claude[:499].rstrip() + '…') if len(claude) > 500 else claude
 
       out = (tpl.replace('{bug_id}', bug_id)
                 .replace('{summary}', summary)

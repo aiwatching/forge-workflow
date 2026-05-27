@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.11"
+version: "0.4.12"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -1044,6 +1044,16 @@ nodes:
       import sys
 
       tpl, bug_id, summary, description, claude, diff_stat = sys.argv[1:7]
+
+      # Per-section length caps. Remote GitLab project rejects MR
+      # description fields > 512 chars per section ("Description cannot
+      # be more than 512 characters"). Truncate each value before
+      # substitution with an ellipsis marker.
+      summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
+
+      description = (description[:499].rstrip() + '…') if len(description) > 500 else description
+
+      claude = (claude[:499].rstrip() + '…') if len(claude) > 500 else claude
 
       out = (tpl.replace('{bug_id}', bug_id)
                 .replace('{summary}', summary)
