@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.16"
+version: "0.7.17"
 
 input:
   project:
@@ -65,7 +65,7 @@ input:
     label: "MR body template"
     default: |
       ## Purpose:
-      {purpose}
+      {summary}
 
       ## Mantis:
       MANTIS-{bug_id}
@@ -969,7 +969,17 @@ nodes:
 
       __FORGE_FIX_SUMMARY_EOF_x7k9z2q4__
 
-      SUMMARY=$(< "$__FORGE_SUMMARY_FILE")
+      # Renamed from $SUMMARY (which was unintentionally clobbering the bug
+
+      # title imported above from fetch-bug-details). $SUMMARY now keeps the
+
+      # bug title; this var holds Claude's fix-code result for the python
+
+      # heredoc below. Net effect: template's {summary} renders the bug
+
+      # title (concise, as intended), {claude_summary} renders Claude's text.
+
+      CLAUDE_FIX_SUMMARY=$(< "$__FORGE_SUMMARY_FILE")
 
       rm -f "$__FORGE_SUMMARY_FILE"
 
@@ -1031,34 +1041,37 @@ nodes:
       )
 
       MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR"
-      "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
+      "$DESCRIPTION_VAR" "$CLAUDE_FIX_SUMMARY" "$DIFF_STAT" <<'PY'
 
       import sys
 
       tpl, bug_id, summary, description, claude, diff_stat = sys.argv[1:7]
 
-      # {purpose} — short one-line summary of what THIS MR does. Take the
-      # first non-empty line of Claude's summary (the action it performed),
-      # cap to 200 chars with ellipsis. Lets the Purpose section render
-      # something concrete ("Add null-check in BugListener.onUpdate") instead
-      # of echoing the Mantis bug title.
+      # {purpose} kept as a back-compat alias for the Mantis bug title
 
-      _purpose_lines = [ln.strip() for ln in claude.splitlines() if ln.strip()]
+      # (= {summary}). Earlier versions derived it from Claude's first
 
-      purpose = _purpose_lines[0] if _purpose_lines else 'Auto-fix for Mantis #{0}'.format(bug_id)
+      # line, which often rendered useless generic text like "Fixed and
 
-      purpose = (purpose[:199].rstrip() + '…') if len(purpose) > 200 else purpose
+      # committed."; the bug title is the most meaningful "purpose" of
+
+      # the MR.
+
+      purpose = summary
 
       # Per-section length caps — remote GitLab project rejects MR
-      # description fields > 512 chars per section ("Description cannot
-      # be more than 512 characters"). Cap at 512 inclusive (matches the
-      # remote rule exactly; previously 500 left unnecessary headroom).
 
-      summary = (summary[:511].rstrip() + '…') if len(summary) > 512 else summary
+      # description fields > 512 chars per section. Cap at 500 chars
 
-      description = (description[:511].rstrip() + '…') if len(description) > 512 else description
+      # (user preference: 500-strict, leaves comfortable headroom).
 
-      claude = (claude[:511].rstrip() + '…') if len(claude) > 512 else claude
+      summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
+
+      description = (description[:499].rstrip() + '…') if len(description) > 500 else description
+
+      claude = (claude[:499].rstrip() + '…') if len(claude) > 500 else claude
+
+      purpose = (purpose[:499].rstrip() + '…') if len(purpose) > 500 else purpose
 
       out = (tpl.replace('{bug_id}', bug_id)
                 .replace('{purpose}', purpose)

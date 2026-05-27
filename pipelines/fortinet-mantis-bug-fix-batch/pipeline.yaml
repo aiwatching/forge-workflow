@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.16"
+version: "0.4.17"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -73,7 +73,7 @@ input:
     label: "MR body template"
     default: |
       ## Purpose:
-      {purpose}
+      {summary}
 
       ## Mantis:
       MANTIS-{bug_id}
@@ -977,7 +977,13 @@ nodes:
 
       __FORGE_FIX_SUMMARY_EOF_x7k9z2q4__
 
-      SUMMARY=$(< "$__FORGE_SUMMARY_FILE")
+      # Renamed from $SUMMARY (which was clobbering the bug title imported
+
+      # above from fetch-bug-details). Bug title stays in $SUMMARY; this
+
+      # holds Claude's text for the python heredoc.
+
+      CLAUDE_FIX_SUMMARY=$(< "$__FORGE_SUMMARY_FILE")
 
       rm -f "$__FORGE_SUMMARY_FILE"
 
@@ -1039,31 +1045,31 @@ nodes:
       )
 
       MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR"
-      "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
+      "$DESCRIPTION_VAR" "$CLAUDE_FIX_SUMMARY" "$DIFF_STAT" <<'PY'
 
       import sys
 
       tpl, bug_id, summary, description, claude, diff_stat = sys.argv[1:7]
 
-      # {purpose} — short one-line summary of what THIS MR does. Take the
-      # first non-empty line of Claude's summary, cap to 200 chars. Lets
-      # the Purpose section render something concrete instead of echoing
-      # the Mantis bug title.
+      # {purpose} kept as a back-compat alias for the Mantis bug title
 
-      _purpose_lines = [ln.strip() for ln in claude.splitlines() if ln.strip()]
+      # (= {summary}). Earlier versions derived it from Claude's first
 
-      purpose = _purpose_lines[0] if _purpose_lines else 'Auto-fix for Mantis #{0}'.format(bug_id)
+      # line, which often rendered useless generic text.
 
-      purpose = (purpose[:199].rstrip() + '…') if len(purpose) > 200 else purpose
+      purpose = summary
 
-      # Per-section length caps — remote GitLab project rejects MR
-      # description fields > 512 chars per section. Cap at 512 inclusive.
+      # Per-section length caps — GitLab project rejects MR description
 
-      summary = (summary[:511].rstrip() + '…') if len(summary) > 512 else summary
+      # fields > 512 chars per section. Cap at 500 (user preference).
 
-      description = (description[:511].rstrip() + '…') if len(description) > 512 else description
+      summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
 
-      claude = (claude[:511].rstrip() + '…') if len(claude) > 512 else claude
+      description = (description[:499].rstrip() + '…') if len(description) > 500 else description
+
+      claude = (claude[:499].rstrip() + '…') if len(claude) > 500 else claude
+
+      purpose = (purpose[:499].rstrip() + '…') if len(purpose) > 500 else purpose
 
       out = (tpl.replace('{bug_id}', bug_id)
                 .replace('{purpose}', purpose)
