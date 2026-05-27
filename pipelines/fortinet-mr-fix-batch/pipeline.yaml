@@ -27,7 +27,7 @@ description: |
     - all MRs in the batch live in the same gitlab_project_id (cross-
       project batches need to be split into separate Fire's)
 
-version: "0.4.2"
+version: "0.5.0"
 
 for_each:
   source: "{{nodes.list-iids.outputs.iids}}"
@@ -61,6 +61,11 @@ input:
     type: string
     required: false
     label: "Labels filter"
+  target_branch:
+    description: "[Mode B filter] Target branch name (e.g. 'main', 'release/7.6'). Ignored when mr_iids is set."
+    type: string
+    required: false
+    label: "Target branch filter"
   limit:
     description: "[Mode B filter] Max MRs to fetch when using the filter. Default 20. Ignored when mr_iids is set."
     type: string
@@ -119,13 +124,14 @@ nodes:
         # Mode B — filter via glab
         AUTHOR="{{input.author}}"
         LABELS="{{input.labels}}"
+        TARGET_BRANCH="{{input.target_branch}}"
         LIMIT="{{input.limit}}"
         [ -z "$LIMIT" ] && LIMIT=20
 
-        if [ -z "$AUTHOR" ] && [ -z "$LABELS" ]; then
+        if [ -z "$AUTHOR" ] && [ -z "$LABELS" ] && [ -z "$TARGET_BRANCH" ]; then
           {
-            echo "[list-iids] ERROR: mr_iids is empty AND no filter (author/labels) provided."
-            echo "[list-iids] Either set mr_iids or at least one of author/labels."
+            echo "[list-iids] ERROR: mr_iids is empty AND no filter (author/labels/target_branch) provided."
+            echo "[list-iids] Either set mr_iids or at least one of author/labels/target_branch."
           } >&2
           exit 1
         fi
@@ -148,11 +154,15 @@ nodes:
           L_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$LABELS")
           Q="${Q}&labels=${L_ENC}"
         fi
+        if [ -n "$TARGET_BRANCH" ]; then
+          T_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$TARGET_BRANCH")
+          Q="${Q}&target_branch=${T_ENC}"
+        fi
 
         echo "[list-iids] filter query: ${Q}" >&2
         # tr+sed instead of `paste -sd,` — BSD paste (macOS) rejects fused -sd
         IIDS=$(glab api "projects/${PID_ENC}/merge_requests?${Q}" | jq -r '.[].iid' | tr '\n' ',' | sed 's/,$//')
-        SRC="filter (author=${AUTHOR:-—} labels=${LABELS:-—} limit=${LIMIT})"
+        SRC="filter (author=${AUTHOR:-—} labels=${LABELS:-—} target_branch=${TARGET_BRANCH:-—} limit=${LIMIT})"
       fi
 
       COUNT=0
