@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.5"
+version: "0.4.7"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -339,6 +339,48 @@ nodes:
       echo "REPORTER=$REPORTER"
       echo "ASSIGNEE=$ASSIGNEE"
       echo "STATUS=$STATUS"
+
+      # ── Idempotency gate ─────────────────────────────────────────
+      # Find the last bugnote we (Forge) added — body contains the
+      # neutral footer `ref: autofix-<BUG_ID>` that notify-mantis writes.
+      # If found AND no human notes / history entries dated after it →
+      # nothing changed since last run; emit __SKIP__ so downstream
+      # (triage / fix-code / push-and-mr / mark-fixed / notify-mantis /
+      # cleanup) all auto-skip via the framework's dep-cascading.
+      # Avoids re-fixing + re-noting unchanged bugs.
+      FORGE_MARKER="ref: autofix-${BUG_ID}"
+      FORGE_LAST=$(echo "$BUG" | jq -r --arg m "$FORGE_MARKER" \
+        '[.notes[]? | select((.body // "") | contains($m)) | .date // ""] | last // ""' \
+        2>/dev/null | tr -d '\n')
+      if [ -n "$FORGE_LAST" ]; then
+        NEW_NOTES_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" --arg m "$FORGE_MARKER" \
+          '[.notes[]? | select(((.date // "") > $cutoff) and (((.body // "") | contains($m)) | not))] | length' \
+          2>/dev/null | tr -d '\n')
+        NEW_HIST_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" \
+          '[.history[]? | select((.date // "") > $cutoff)] | length' \
+          2>/dev/null | tr -d '\n')
+        NEW_NOTES_COUNT="${NEW_NOTES_COUNT:-0}"
+        NEW_HIST_COUNT="${NEW_HIST_COUNT:-0}"
+        if [ "$NEW_NOTES_COUNT" = "0" ] && [ "$NEW_HIST_COUNT" = "0" ]; then
+          {
+            echo ""
+            echo "─── SKIP: nothing new since Forge's last run ───"
+            echo "Last Forge note:       $FORGE_LAST"
+            echo "Human notes since:     $NEW_NOTES_COUNT"
+            echo "History events since:  $NEW_HIST_COUNT"
+            echo "Downstream (triage / fix / push-mr / mark-fixed / notify) will skip."
+          } >&2
+          echo "__SKIP__"
+          exit 0
+        fi
+        {
+          echo ""
+          echo "─── Incremental run: changes since Forge's last note ───"
+          echo "Last Forge note @ $FORGE_LAST"
+          echo "  new human notes:    $NEW_NOTES_COUNT"
+          echo "  new history events: $NEW_HIST_COUNT"
+        } >&2
+      fi
       echo "RESOLUTION=$RESOLUTION"
       echo "DESCRIPTION_B64=$DESC_B64"
       echo "ADDITIONAL_INFO_B64=$ADDL_B64"
@@ -1267,76 +1309,73 @@ nodes:
       - name: result
         extract: stdout
 
-  notify-teams:
-    worktree: false
-    project: "{{input.project}}"
-    prompt: >
-      set -e
-
-      MR_OUT=$'{{nodes.push-and-mr.outputs.mr}}'
-
-      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$MR_OUT"
-
-      DETAILS=$'{{nodes.fetch-bug-details.outputs.details}}'
-
-      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$DETAILS"
-
-      if [ -z "$MR_URL" ]; then
-        echo "SKIP — no MR URL (Claude likely made no changes)"
-        exit 0
-      fi
-
-      MSG_TPL="{{input.teams_message_template}}"
-
-      [ -z "$MSG_TPL" ] && MSG_TPL="🤖 Mantis #{bug_id} fixed — please review
-      MR: {mr_url}"$'\n'"Bug: {summary}"
-
-      # Forge exposes /api/connector-tool on loopback (no auth) — pipelines
-
-      # call connector tools through it. teams.send_message takes name (fuzzy
-
-      # match against any chat the user is in) + text.
-
-      send_to() {
-        local who="$1"
-        local role="$2"
-        if [ -z "$who" ]; then echo "SKIP — no $role name"; return 0; fi
-        # Render template + build JSON payload in one Python invocation so we
-        # never have to worry about shell quoting of summary / description /
-        # MR URL when they contain |, $, backticks, etc.
-        local payload
-        payload=$(python3 - "$MSG_TPL" "{{bug_id}}" "$SUMMARY" "$role" "$MR_URL" "$who" <<'PY'
-      import json, sys
-
-      tpl, bug_id, summary, role, mr_url, who = sys.argv[1:7]
-
-      text = (tpl.replace('{bug_id}', bug_id)
-                 .replace('{summary}', summary)
-                 .replace('{role}', role)
-                 .replace('{mr_url}', mr_url))
-      print(json.dumps({'plugin_id': 'teams', 'tool': 'send_message',
-                        'input': {'name': who, 'text': text}}))
-      PY
-
-      )
-        echo "Sending to Teams chat '$who' ($role)…"
-        curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
-          -H 'content-type: application/json' \
-          --data-binary "$payload" \
-          | jq .
-      }
-
-      send_to "$ASSIGNEE" "assignee"
-
-      send_to "$REPORTER" "reporter"
-
-      echo "DONE — MR: $MR_URL"
-    mode: shell
-    depends_on:
-      - notify-mantis
-    outputs:
-      - name: result
-        extract: stdout
+  # ═════════════════════════════════════════════════════════════════════
+  # notify-teams — DISABLED (commented out per user request 2026-05-26).
+  # Code preserved verbatim for future re-enable. To re-enable:
+  #   1. Uncomment the whole block below (strip leading "# ")
+  #   2. Change cleanup.depends_on from `notify-mantis` back to `notify-teams`
+  # ═════════════════════════════════════════════════════════════════════
+  # notify-teams:
+  #   worktree: false
+  #   project: "{{input.project}}"
+  #   prompt: >
+  #     set -e
+  #
+  #     MR_OUT=$'{{nodes.push-and-mr.outputs.mr}}'
+  #
+  #     while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$MR_OUT"
+  #
+  #     DETAILS=$'{{nodes.fetch-bug-details.outputs.details}}'
+  #
+  #     while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$DETAILS"
+  #
+  #     if [ -z "$MR_URL" ]; then
+  #       echo "SKIP — no MR URL (Claude likely made no changes)"
+  #       exit 0
+  #     fi
+  #
+  #     MSG_TPL="{{input.teams_message_template}}"
+  #
+  #     [ -z "$MSG_TPL" ] && MSG_TPL="🤖 Mantis #{bug_id} fixed — please review
+  #     MR: {mr_url}"$'\n'"Bug: {summary}"
+  #
+  #     send_to() {
+  #       local who="$1"
+  #       local role="$2"
+  #       if [ -z "$who" ]; then echo "SKIP — no $role name"; return 0; fi
+  #       local payload
+  #       payload=$(python3 - "$MSG_TPL" "{{bug_id}}" "$SUMMARY" "$role" "$MR_URL" "$who" <<'PY'
+  #     import json, sys
+  #
+  #     tpl, bug_id, summary, role, mr_url, who = sys.argv[1:7]
+  #
+  #     text = (tpl.replace('{bug_id}', bug_id)
+  #                .replace('{summary}', summary)
+  #                .replace('{role}', role)
+  #                .replace('{mr_url}', mr_url))
+  #     print(json.dumps({'plugin_id': 'teams', 'tool': 'send_message',
+  #                       'input': {'name': who, 'text': text}}))
+  #     PY
+  #
+  #     )
+  #       echo "Sending to Teams chat '$who' ($role)…"
+  #       curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+  #         -H 'content-type: application/json' \
+  #         --data-binary "$payload" \
+  #         | jq .
+  #     }
+  #
+  #     send_to "$ASSIGNEE" "assignee"
+  #
+  #     send_to "$REPORTER" "reporter"
+  #
+  #     echo "DONE — MR: $MR_URL"
+  #   mode: shell
+  #   depends_on:
+  #     - notify-mantis
+  #   outputs:
+  #     - name: result
+  #       extract: stdout
   cleanup:
     worktree: false
     project: "{{input.project}}"
@@ -1381,7 +1420,7 @@ nodes:
       echo "cleanup done"
     mode: shell
     depends_on:
-      - notify-teams
+      - notify-mantis
     outputs:
       - name: result
         extract: stdout

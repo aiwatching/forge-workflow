@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.5.0"
+version: "0.5.1"
 
 input:
   project:
@@ -507,21 +507,22 @@ nodes:
       STATUS_OUT=$'{{nodes.reply.outputs.result}}'
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$STATUS_OUT"
 
-      # Best-effort Teams ping — to the LATEST commenter (the person
-      # waiting on a response), falling back to MR author.
-      TARGET="${LATEST_COMMENTER:-$MR_AUTHOR}"
-      MSG="🤖 Forge handled MR review on \"${MR_TITLE}\" (status: ${STATUS:-?})
-
-      MR: {{input.mr_url}}"
-      PAYLOAD=$(jq -n --arg user "$TARGET" --arg msg "$MSG" \
-        '{plugin_id:"teams", tool:"send_message", input:{chat_name:$user, message:$msg}}')
-      if curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
-           -H 'content-type: application/json' --data "$PAYLOAD" \
-           > /dev/null 2>&1; then
-        TEAMS_RESULT="notified @${TARGET}"
-      else
-        TEAMS_RESULT="skipped (connector unreachable or not configured)"
-      fi
+      # Teams notification DISABLED (commented out per user request 2026-05-26).
+      # Code preserved verbatim below for future re-enable.
+      TEAMS_RESULT="disabled (commented out)"
+      # TARGET="${LATEST_COMMENTER:-$MR_AUTHOR}"
+      # MSG="🤖 Forge handled MR review on \"${MR_TITLE}\" (status: ${STATUS:-?})
+      #
+      # MR: {{input.mr_url}}"
+      # PAYLOAD=$(jq -n --arg user "$TARGET" --arg msg "$MSG" \
+      #   '{plugin_id:"teams", tool:"send_message", input:{chat_name:$user, message:$msg}}')
+      # if curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+      #      -H 'content-type: application/json' --data "$PAYLOAD" \
+      #      > /dev/null 2>&1; then
+      #   TEAMS_RESULT="notified @${TARGET}"
+      # else
+      #   TEAMS_RESULT="skipped (connector unreachable or not configured)"
+      # fi
 
       # Remove worktree (only exists if ACT path ran)
       ROOT=$(git rev-parse --show-toplevel)
