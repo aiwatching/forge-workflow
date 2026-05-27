@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.6.3"
+version: "0.6.4"
 
 input:
   project:
@@ -341,27 +341,25 @@ nodes:
         POSTED="failed"
       fi
 
-      # Stage label based on analyze verdict:
+      # Stage label based on analyze verdict — always set, even if the
+      # comment POST failed, so workflow state moves forward.
       #   ready-to-merge → forge:stage::reviewed
       #   needs-review   → forge:stage::needs-fix
       # Mutually exclusive with the other forge:stage::* labels.
-      STAGE_LABEL="not set"
-      if [ "$POSTED" = "yes" ]; then
-        VERDICT=$(grep -A1 '^─── VERDICT ───' "${MR_DIR}/analyze-report" 2>/dev/null | tail -n1 | tr -d '[:space:]')
-        case "$VERDICT" in
-          ready-to-merge) NEXT_LABEL="forge:stage::reviewed" ;;
-          needs-review)   NEXT_LABEL="forge:stage::needs-fix" ;;
-          *)              NEXT_LABEL="forge:stage::needs-fix" ;;  # unparseable → safer side
-        esac
-        OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" | sed "s/${NEXT_LABEL},\?//;s/,$//")
-        if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
-             -f "add_labels=${NEXT_LABEL}" \
-             -f "remove_labels=${OTHERS}" \
-             > /dev/null 2>&1; then
-          STAGE_LABEL="${NEXT_LABEL} (verdict=${VERDICT:-unknown})"
-        else
-          STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
-        fi
+      VERDICT=$(grep -A1 '^─── VERDICT ───' "${MR_DIR}/analyze-report" 2>/dev/null | tail -n1 | tr -d '[:space:]')
+      case "$VERDICT" in
+        ready-to-merge) NEXT_LABEL="forge:stage::reviewed" ;;
+        needs-review)   NEXT_LABEL="forge:stage::needs-fix" ;;
+        *)              NEXT_LABEL="forge:stage::needs-fix" ;;  # unparseable → safer side
+      esac
+      OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" | sed "s/${NEXT_LABEL},\?//;s/,$//")
+      if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+           -f "add_labels=${NEXT_LABEL}" \
+           -f "remove_labels=${OTHERS}" \
+           > /dev/null 2>&1; then
+        STAGE_LABEL="${NEXT_LABEL} (verdict=${VERDICT:-unknown})"
+      else
+        STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
       fi
 
       echo "POSTED=${POSTED}"
