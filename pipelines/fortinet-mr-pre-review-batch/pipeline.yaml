@@ -25,7 +25,7 @@ description: |
     - all MRs in the batch live in the same gitlab_project_id
       (cross-project batches need separate Fire's)
 
-version: "0.1.1"
+version: "0.1.2"
 
 for_each:
   source: "{{nodes.list-iids.outputs.iids}}"
@@ -55,9 +55,10 @@ input:
     required: false
     label: "Author filter"
   labels:
-    description: "[Mode B filter] Comma-separated label names (AND'd). Ignored when mr_iids is set."
+    description: "[Mode B filter] Comma-separated label names (AND'd). Default = forge:stage::needs-review so this Job only picks MRs that mantis-bug-fix / mr-fix just produced. Stage machine: ::needs-review (this Job's input) → pre-review flips to ::reviewed (ready to merge) OR ::needs-fix (back to mr-fix). Ignored when mr_iids is set."
     type: string
     required: false
+    default: "forge:stage::needs-review"
     label: "Labels filter"
   target_branch:
     description: "[Mode B filter] Target branch name (e.g. 'main', 'release/7.6'). Ignored when mr_iids is set."
