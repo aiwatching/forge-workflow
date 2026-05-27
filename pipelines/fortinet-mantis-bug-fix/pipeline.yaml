@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.20"
+version: "0.7.19"
 
 input:
   project:
@@ -1115,31 +1115,36 @@ nodes:
 
       REVIEWER_LIST=""
 
-      # GitLab --assignee on this server keeps failing for Mantis devs
-
-      # (likely the Mantis username doesn't map cleanly to a GitLab user).
-
-      # Until that's fixed, merge the Mantis assignee into the reviewer
-
-      # list alongside input.mr_reviewer. Dedup case-insensitively.
-
-      __REVIEWERS_MERGED="$ASSIGNEE_USERNAME"
-
-      if [ -n "$REVIEWER_USERNAMES_RAW" ]; then __REVIEWERS_MERGED="${__REVIEWERS_MERGED:+$__REVIEWERS_MERGED,}$REVIEWER_USERNAMES_RAW"; fi
-
-      if [ -n "$__REVIEWERS_MERGED" ]; then
-        IFS=',' read -ra __REVS <<< "$__REVIEWERS_MERGED"
-        for __r in "${__REVS[@]}"; do
-          __r=$(echo "$__r" | xargs)
-          [ -z "$__r" ] && continue
-          # case-insensitive dedup against REVIEWER_LIST
-          if echo ",${REVIEWER_LIST,,}," | grep -q ",${__r,,},"; then continue; fi
-          PEOPLE_FLAGS+=(--reviewer "$__r")
-          REVIEWER_LIST="${REVIEWER_LIST:+$REVIEWER_LIST,}$__r"
-        done
+      if [ -n "$ASSIGNEE_USERNAME" ]; then
+        PEOPLE_FLAGS+=(--assignee "$ASSIGNEE_USERNAME")
+        echo "Setting MR assignee: $ASSIGNEE_USERNAME (from bug assignee '$ASSIGNEE_RAW')"
+      else
+        echo "No (username) found in bug assignee '$ASSIGNEE_RAW' — skipping --assignee"
       fi
 
-      if [ -n "$REVIEWER_LIST" ]; then echo "Setting MR reviewers: $REVIEWER_LIST (mantis assignee + input.mr_reviewer)"; else echo "No reviewers (bug assignee empty AND input.mr_reviewer empty) — skipping --reviewer"; fi
+      # Split input.mr_reviewer on `,`, trim each, skip blanks. Each
+      # reviewer becomes its own --reviewer flag (glab supports the flag
+      # repeated; safer than `--reviewer a,b,c` which depends on glab
+      # version). Bash: IFS=',' read -ra splits; xargs trims surrounding
+      # whitespace including any leftover \r.
+
+      if [ -n "$REVIEWER_USERNAMES_RAW" ]; then
+        IFS=',' read -ra __REVS <<< "$REVIEWER_USERNAMES_RAW"
+        for __r in "${__REVS[@]}"; do
+          __r=$(echo "$__r" | xargs)
+          if [ -n "$__r" ]; then
+            PEOPLE_FLAGS+=(--reviewer "$__r")
+            REVIEWER_LIST="${REVIEWER_LIST:+$REVIEWER_LIST,}$__r"
+          fi
+        done
+        if [ -n "$REVIEWER_LIST" ]; then
+          echo "Setting MR reviewers: $REVIEWER_LIST (from input.mr_reviewer)"
+        else
+          echo "input.mr_reviewer had only blanks/commas — skipping --reviewer"
+        fi
+      else
+        echo "input.mr_reviewer empty — skipping --reviewer"
+      fi
 
       # Capture glab output AND exit code so we can debug failures. Old
 
