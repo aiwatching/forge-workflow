@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-05-27T17:59:39Z",
+  "updated_at": "2026-05-27T18:03:08Z",
   "recipes": [],
   "pipelines": [
     {
@@ -84,17 +84,17 @@
       "rating": 0
     },
     {
-      "name": "fortinet-mr-review",
-      "display_name": "Fortinet \u00b7 MR Review (single)",
-      "description": "Single-shot Fortinet GitLab MR review responder. User provides an MR URL; pipeline reads all comments + diff, triages (act/skip/close/noop) per user_prompt policy, optionally pushes a fixup commit, replies on the MR, and notifies Teams. Copy of mr-review-fix simplified for manual single runs.",
-      "version": "0.5.1",
+      "name": "fortinet-mr-fix",
+      "display_name": "Fortinet \u00b7 MR Fix (single)",
+      "description": "Single-shot Fortinet GitLab MR responder. User provides an MR URL; pipeline reads all comments + diff, triages (act/skip/close/noop) per user_prompt policy, optionally pushes a fixup commit, replies on the MR, and notifies Teams.",
+      "version": "0.6.0",
       "author": "forge",
       "tags": [
         "fortinet",
         "gitlab",
+        "fix",
         "mr",
         "claude-code",
-        "review",
         "single"
       ],
       "score": 0,
@@ -118,16 +118,16 @@
       "rating": 0
     },
     {
-      "name": "fortinet-mr-review-batch",
-      "display_name": "Fortinet \u00b7 MR Review (batch)",
-      "description": "Batch the full fortinet-mr-review flow (ingest \u2192 triage \u2192 fix \u2192 reply \u2192 cleanup) over N MRs via framework for_each + before. Two input modes: explicit mr_iids CSV, OR author/labels/limit filter resolved at run time by a setup node. Replaces v0.2.0 (iid-only) and v0.1.x (HTTP child-dispatch).",
-      "version": "0.3.2",
+      "name": "fortinet-mr-fix-batch",
+      "display_name": "Fortinet \u00b7 MR Fix (batch)",
+      "description": "Batch the full fortinet-mr-fix flow (ingest \u2192 triage \u2192 fix \u2192 reply \u2192 cleanup) over N MRs via framework for_each + before. Two input modes: explicit mr_iids CSV, OR author/labels/limit filter resolved at run time by a setup node.",
+      "version": "0.4.0",
       "author": "forge",
       "tags": [
         "fortinet",
         "gitlab",
+        "fix",
         "mr",
-        "review",
         "batch",
         "for_each"
       ],

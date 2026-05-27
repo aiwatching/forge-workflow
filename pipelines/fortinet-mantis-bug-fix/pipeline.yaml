@@ -1494,7 +1494,7 @@ nodes:
       set +e
 
       # Rebuild WORKTREE_DIR from template instead of decoding from upstream
-      # — same pattern as fortinet-mr-review's cleanup. BUG_ID comes from
+      # — same pattern as fortinet-mr-fix's cleanup. BUG_ID comes from
       # resolve via INFO.
 
       INFO=$'{{nodes.resolve.outputs.info}}'

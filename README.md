@@ -78,8 +78,8 @@ Use Schedules + Fire-button pipelines instead.)
 |---|---|
 | `fortinet-mantis-bug-fix` | Single Fortinet Mantis bug → worktree → Claude fix → MR → notify |
 | `fortinet-mantis-bug-fix-batch` | N bug ids per Fire (for_each loop, no child dispatch) |
-| `fortinet-mr-review` | Single Fortinet GitLab MR — read all comments, triage, push fixup, reply, notify |
-| `fortinet-mr-review-batch` | N MR iids OR author/labels filter (for_each.before resolves at run time) |
+| `fortinet-mr-fix` | Single Fortinet GitLab MR — read all comments, triage, push fixup, reply, notify |
+| `fortinet-mr-fix-batch` | N MR iids OR author/labels filter (for_each.before resolves at run time) |
 | `fortinet-mr-pre-review` | Pre-review pass on a Fortinet MR — analyze + post markdown comment |
 | `issue-fix-and-review` | GitHub issue scanner |
 | `multi-agent-collaboration` | Multi-agent conversation demo |
