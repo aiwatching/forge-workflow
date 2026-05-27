@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.15"
+version: "0.7.16"
 
 input:
   project:
@@ -1042,6 +1042,7 @@ nodes:
       # cap to 200 chars with ellipsis. Lets the Purpose section render
       # something concrete ("Add null-check in BugListener.onUpdate") instead
       # of echoing the Mantis bug title.
+
       _purpose_lines = [ln.strip() for ln in claude.splitlines() if ln.strip()]
 
       purpose = _purpose_lines[0] if _purpose_lines else 'Auto-fix for Mantis #{0}'.format(bug_id)
@@ -1052,6 +1053,7 @@ nodes:
       # description fields > 512 chars per section ("Description cannot
       # be more than 512 characters"). Cap at 512 inclusive (matches the
       # remote rule exactly; previously 500 left unnecessary headroom).
+
       summary = (summary[:511].rstrip() + '…') if len(summary) > 512 else summary
 
       description = (description[:511].rstrip() + '…') if len(description) > 512 else description

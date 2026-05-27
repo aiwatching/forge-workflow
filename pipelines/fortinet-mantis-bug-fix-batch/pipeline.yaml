@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.15"
+version: "0.4.16"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -1049,6 +1049,7 @@ nodes:
       # first non-empty line of Claude's summary, cap to 200 chars. Lets
       # the Purpose section render something concrete instead of echoing
       # the Mantis bug title.
+
       _purpose_lines = [ln.strip() for ln in claude.splitlines() if ln.strip()]
 
       purpose = _purpose_lines[0] if _purpose_lines else 'Auto-fix for Mantis #{0}'.format(bug_id)
@@ -1057,6 +1058,7 @@ nodes:
 
       # Per-section length caps — remote GitLab project rejects MR
       # description fields > 512 chars per section. Cap at 512 inclusive.
+
       summary = (summary[:511].rstrip() + '…') if len(summary) > 512 else summary
 
       description = (description[:511].rstrip() + '…') if len(description) > 512 else description
