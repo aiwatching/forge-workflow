@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.17"
+version: "0.7.18"
 
 input:
   project:
@@ -59,7 +59,7 @@ input:
       the others in the MR description as "follow-ups" for the human
       reviewer to confirm.
   mr_body_template:
-    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {purpose} {description} {claude_summary} {diff_stat}. {purpose} = Claude's one-line fix summary (cap ~200 chars). {summary} = full Mantis bug title."
+    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {purpose} {description} {description_summary} {claude_summary} {diff_stat}. {summary} = Mantis bug title (verbatim). {description_summary} = Mantis bug description truncated to 500. {purpose} = alias for {summary}."
     type: string
     multiline: true
     label: "MR body template"
@@ -71,7 +71,7 @@ input:
       MANTIS-{bug_id}
 
       ## Description:
-      {summary}
+      {description_summary}
 
       ## Technical Description:
       {claude_summary}
@@ -1053,17 +1053,13 @@ nodes:
 
       # line, which often rendered useless generic text like "Fixed and
 
-      # committed."; the bug title is the most meaningful "purpose" of
-
-      # the MR.
+      # committed."
 
       purpose = summary
 
-      # Per-section length caps — remote GitLab project rejects MR
+      # Per-section length caps — GitLab project rejects MR description
 
-      # description fields > 512 chars per section. Cap at 500 chars
-
-      # (user preference: 500-strict, leaves comfortable headroom).
+      # fields > 512 chars per section. Cap at 500 chars (user preference).
 
       summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
 
@@ -1073,9 +1069,20 @@ nodes:
 
       purpose = (purpose[:499].rstrip() + '…') if len(purpose) > 500 else purpose
 
+      # {description_summary} — alias for the capped Mantis description.
+
+      # Use in the Description section instead of {summary} so the section
+
+      # carries the bug's actual narrative (capped 500), not a repeat of
+
+      # the bug title.
+
+      description_summary = description
+
       out = (tpl.replace('{bug_id}', bug_id)
                 .replace('{purpose}', purpose)
                 .replace('{summary}', summary)
+                .replace('{description_summary}', description_summary)
                 .replace('{description}', description)
                 .replace('{claude_summary}', claude)
                 .replace('{diff_stat}', diff_stat))

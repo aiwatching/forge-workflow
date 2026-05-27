@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.17"
+version: "0.4.18"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -67,7 +67,7 @@ input:
       the others in the MR description as "follow-ups" for the human
       reviewer to confirm.
   mr_body_template:
-    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {purpose} {description} {claude_summary} {diff_stat}. {purpose} = Claude's one-line fix summary (cap ~200 chars). {summary} = full Mantis bug title."
+    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {purpose} {description} {description_summary} {claude_summary} {diff_stat}. {summary} = Mantis bug title (verbatim). {description_summary} = Mantis bug description truncated to 500. {purpose} = alias for {summary}."
     type: string
     multiline: true
     label: "MR body template"
@@ -79,7 +79,7 @@ input:
       MANTIS-{bug_id}
 
       ## Description:
-      {summary}
+      {description_summary}
 
       ## Technical Description:
       {claude_summary}
@@ -1071,9 +1071,14 @@ nodes:
 
       purpose = (purpose[:499].rstrip() + '…') if len(purpose) > 500 else purpose
 
+      # {description_summary} — alias for the capped Mantis description.
+
+      description_summary = description
+
       out = (tpl.replace('{bug_id}', bug_id)
                 .replace('{purpose}', purpose)
                 .replace('{summary}', summary)
+                .replace('{description_summary}', description_summary)
                 .replace('{description}', description)
                 .replace('{claude_summary}', claude)
                 .replace('{diff_stat}', diff_stat))
