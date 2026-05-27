@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.3"
+version: "0.7.4"
 
 input:
   project:
@@ -1084,8 +1084,10 @@ nodes:
       if [ "$CREATE_FAILED_HARD" = "1" ]; then
         if [ -n "$MR_URL" ]; then
           echo "WARN: glab create failed; reusing existing MR $MR_URL — its title / description may NOT reflect this run's commits." >&2
+        else
+          echo "ERROR: glab create failed AND no existing MR found for $BRANCH — nothing to reference." >&2
+          exit 1
         fi
-        exit 1
       fi
 
 

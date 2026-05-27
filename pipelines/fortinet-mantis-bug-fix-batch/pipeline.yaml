@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.3"
+version: "0.4.4"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -1092,8 +1092,10 @@ nodes:
       if [ "$CREATE_FAILED_HARD" = "1" ]; then
         if [ -n "$MR_URL" ]; then
           echo "WARN: glab create failed; reusing existing MR $MR_URL — its title / description may NOT reflect this run's commits." >&2
+        else
+          echo "ERROR: glab create failed AND no existing MR found for $BRANCH — nothing to reference." >&2
+          exit 1
         fi
-        exit 1
       fi
 
 
