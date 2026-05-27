@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.9"
+version: "0.4.10"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -931,6 +931,18 @@ nodes:
       # workdir already cd'd us into the mantis worktree. Derive BRANCH.
 
       BRANCH=$(git symbolic-ref --short HEAD)
+
+      # Defensive: refuse to push if HEAD is not the expected fix branch.
+
+      # Catches stale workdir (worktree dir cleaned up between runs but the
+
+      # template still resolves to that path → cd silently fails → git ops
+
+      # run in main project root which is checked out on the base branch).
+
+      EXPECTED_BRANCH="fix/mantis-${BUG_ID}"
+
+      [ "$BRANCH" = "$EXPECTED_BRANCH" ] || { echo "ERROR: HEAD on '$BRANCH', expected '$EXPECTED_BRANCH' — refusing to push (workdir likely stale, would push base branch)" >&2; exit 1; }
 
       # Bail if Claude didn't actually commit anything
 

@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.9"
+version: "0.7.10"
 
 input:
   project:
@@ -923,6 +923,18 @@ nodes:
       # workdir already cd'd us into the mantis worktree. Derive BRANCH.
 
       BRANCH=$(git symbolic-ref --short HEAD)
+
+      # Defensive: refuse to push if HEAD is not the expected fix branch.
+
+      # Catches stale workdir (worktree dir cleaned up between runs but the
+
+      # template still resolves to that path → cd silently fails → git ops
+
+      # run in main project root which is checked out on the base branch).
+
+      EXPECTED_BRANCH="fix/mantis-${BUG_ID}"
+
+      [ "$BRANCH" = "$EXPECTED_BRANCH" ] || { echo "ERROR: HEAD on '$BRANCH', expected '$EXPECTED_BRANCH' — refusing to push (workdir likely stale, would push base branch)" >&2; exit 1; }
 
       # Bail if Claude didn't actually commit anything
 
