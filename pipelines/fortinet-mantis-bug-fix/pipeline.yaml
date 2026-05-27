@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.8"
+version: "0.7.9"
 
 input:
   project:
@@ -662,6 +662,73 @@ nodes:
     outputs:
       - name: attach
         extract: stdout
+
+  # SKIP-branch sibling of notify-mantis. Posts a Mantis bugnote explaining
+  # why Forge declined this bug, with the same `ref: autofix-<id>` footer
+  # the idempotency gate in fetch-bug-details greps for. Without this note,
+  # every subsequent schedule poll re-fires triage on the same bug forever.
+  notify-skip:
+    worktree: false
+    project: "{{input.project}}"
+    depends_on:
+      - triage
+    mode: shell
+    prompt: |
+      set +e
+      BUG_ID="{{input.bug_id}}"
+      TRIAGE_OUT=$'{{nodes.triage.outputs.report}}'
+
+      # Only fire on SKIP — if triage said ACT, cascade-skip ourselves so
+      # the ACT-path notify-mantis is the one talking to Mantis.
+      echo "$TRIAGE_OUT" | grep -q "^ACTION: skip" || { echo "__SKIP__"; exit 0; }
+
+      # Pull the structured TRIAGE block (VERDICT / ONE_LINER / Reasoning)
+      # as bugnote body so humans see exactly what Forge reasoned.
+      REASON=$(echo "$TRIAGE_OUT" | sed -n '/─── TRIAGE ───/,/^ACTION:/p')
+      [ -z "$REASON" ] && REASON="$TRIAGE_OUT"
+
+      COMMENT="Auto-fix skipped — Forge triage declined this bug.
+
+      ${REASON}
+
+      ---
+      ref: autofix-${BUG_ID}"
+
+      PAYLOAD=$(jq -n --argjson bug "$BUG_ID" --arg text "$COMMENT" \
+        '{plugin_id:"mantis", tool:"add_comment", input:{bug_id:$bug, text:$text}}')
+
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD" 2>&1)
+      RC=$?
+      if [ $RC -ne 0 ]; then
+        echo "WARN: Mantis skip-note skipped — connector-tool unreachable (rc=$RC)" >&2
+        echo "COMMENT_POSTED=false"
+        echo "REASON=bridge_unreachable"
+        exit 0
+      fi
+      IS_ERR=$(echo "$RESP" | jq -r '.is_error // false' 2>/dev/null)
+      if [ "$IS_ERR" = "true" ]; then
+        WHY=$(echo "$RESP" | jq -r '.content // .error // "unknown"' 2>/dev/null | head -c 200)
+        echo "WARN: Mantis add_comment returned is_error=true: $WHY" >&2
+        echo "COMMENT_POSTED=false"
+        echo "REASON=$WHY"
+      else
+        echo "Mantis skip-note posted on bug #${BUG_ID}"
+        echo "COMMENT_POSTED=true"
+      fi
+      echo ""
+      echo "=== RESULT ==="
+      echo "bug_id:      ${BUG_ID}"
+      echo "outcome:     triage SKIP"
+      if [ "$COMMENT_POSTED" = "true" ]; then
+        echo "status:      skip-note posted on Mantis"
+      else
+        echo "status:      skip-note NOT posted (best-effort)"
+      fi
+    outputs:
+      - name: result
+        extract: stdout
+
   fix-code:
     # Claude CLI sometimes exits with a "require is not defined" on
     # stderr during early startup — bump retries + backoff to ride
