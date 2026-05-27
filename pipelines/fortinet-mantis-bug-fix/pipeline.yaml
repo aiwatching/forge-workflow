@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.2"
+version: "0.7.3"
 
 input:
   project:
@@ -82,10 +82,9 @@ input:
       ## Testing Done
       TBD — please verify in CI + smoke test.
   mr_reviewer:
-    description: "Comma-separated GitLab usernames (without @) for MR reviewers. Example: 'alice, bob, carol'. Leave EMPTY to default to the bug's Mantis QA Assignee."
+    description: "Comma-separated GitLab usernames (without @) for MR reviewers. Example: 'alice, bob, carol'. Optional — leave empty to skip."
     type: string
-    required: false
-    label: "MR reviewers (blank → bug QA assignee)"
+    label: "MR reviewers (comma-separated usernames)"
     default: ""
   teams_message_template:
     description: "Teams notification template. Placeholders: {bug_id} {summary} {role} {mr_url} {who}"
@@ -306,11 +305,6 @@ nodes:
       # `.handler` / `.assigned_to` were legacy guesses that never matched.
       # Keep them as fallback in case a future Mantis API version uses them.
       ASSIGNEE=$(echo "$BUG" | jq -r '.assignee // .handler // .assigned_to // ""' | tr -d '\n')
-      # QA Assignee — separate Mantis field, exposed by connector as
-      # `.qa_assignee`. Used as the default MR reviewer when
-      # `input.mr_reviewer` is empty (most common workflow: QA reviews
-      # the engineer's MR for the bug they filed).
-      QA_ASSIGNEE=$(echo "$BUG" | jq -r '.qa_assignee // ""' | tr -d '\n')
       DESC_B64=$(echo "$BUG" | jq -r '.description // ""' | base64 | tr -d '\n')
       ADDL_B64=$(echo "$BUG" | jq -r '.additional_information // ""' | base64 | tr -d '\n')
       # Notes with author + date + body, separated by ─── for readability.
@@ -330,54 +324,7 @@ nodes:
       echo "PRIORITY=$PRIORITY"
       echo "REPORTER=$REPORTER"
       echo "ASSIGNEE=$ASSIGNEE"
-      echo "QA_ASSIGNEE=$QA_ASSIGNEE"
       echo "STATUS=$STATUS"
-
-      # ── Idempotency gate ─────────────────────────────────────────
-      # Find the last bugnote we (Forge) added — body contains the
-      # neutral footer `ref: autofix-<BUG_ID>` that notify-mantis writes.
-      # If found AND no human notes / history entries dated after it →
-      # nothing changed since last run; emit __SKIP__ so downstream
-      # (triage / fix-code / push-and-mr / mark-fixed / notify-mantis /
-      # notify-teams / cleanup) all auto-skip via the framework's
-      # dep-cascading. Avoids re-fixing + re-noting unchanged bugs.
-      FORGE_MARKER="ref: autofix-${BUG_ID}"
-      FORGE_LAST=$(echo "$BUG" | jq -r --arg m "$FORGE_MARKER" \
-        '[.notes[]? | select((.body // "") | contains($m)) | .date // ""] | last // ""' \
-        2>/dev/null | tr -d '\n')
-      if [ -n "$FORGE_LAST" ]; then
-        # Notes posted AFTER the marker, excluding our own (any subsequent
-        # autofix note is by us re-running; ignore those).
-        NEW_NOTES_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" --arg m "$FORGE_MARKER" \
-          '[.notes[]? | select(((.date // "") > $cutoff) and (((.body // "") | contains($m)) | not))] | length' \
-          2>/dev/null | tr -d '\n')
-        # History events (status/resolution/assignee/severity/desc edits etc.)
-        # dated after the marker.
-        NEW_HIST_COUNT=$(echo "$BUG" | jq -r --arg cutoff "$FORGE_LAST" \
-          '[.history[]? | select((.date // "") > $cutoff)] | length' \
-          2>/dev/null | tr -d '\n')
-        NEW_NOTES_COUNT="${NEW_NOTES_COUNT:-0}"
-        NEW_HIST_COUNT="${NEW_HIST_COUNT:-0}"
-        if [ "$NEW_NOTES_COUNT" = "0" ] && [ "$NEW_HIST_COUNT" = "0" ]; then
-          {
-            echo ""
-            echo "─── SKIP: nothing new since Forge's last run ───"
-            echo "Last Forge note:       $FORGE_LAST"
-            echo "Human notes since:     $NEW_NOTES_COUNT"
-            echo "History events since:  $NEW_HIST_COUNT"
-            echo "Downstream (triage / fix / push-mr / mark-fixed / notify) will skip."
-          } >&2
-          echo "__SKIP__"
-          exit 0
-        fi
-        {
-          echo ""
-          echo "─── Incremental run: changes since Forge's last note ───"
-          echo "Last Forge note @ $FORGE_LAST"
-          echo "  new human notes:    $NEW_NOTES_COUNT"
-          echo "  new history events: $NEW_HIST_COUNT"
-        } >&2
-      fi
       echo "RESOLUTION=$RESOLUTION"
       echo "DESCRIPTION_B64=$DESC_B64"
       echo "ADDITIONAL_INFO_B64=$ADDL_B64"
@@ -832,12 +779,7 @@ nodes:
     # checkout).
     workdir: "{{nodes.worktree-setup.outputs.wt}}"
     worktree: false
-    # `prompt: |` (literal block scalar) — preserves newlines verbatim.
-    # The extract_username() shell function below relies on per-line
-    # boundaries; `prompt: >` (folded) would join consecutive non-empty
-    # lines with spaces and break the function definition (and the
-    # surrounding if/else blocks). Pattern repeated for the batch yaml.
-    prompt: |
+    prompt: >
       set -e
 
       INFO=$'{{nodes.resolve.outputs.info}}'
@@ -950,7 +892,8 @@ nodes:
 
       )
 
-      MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR" "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
+      MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR"
+      "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
 
       import sys
 
@@ -991,52 +934,38 @@ nodes:
 
 
       # MR people-flags. Two independent assignments:
-      #   1. Bug assignee     → MR --assignee   (whoever owns the bug owns the MR)
-      #   2. input.mr_reviewer → MR --reviewer   (user-typed, optional)
-      #      └─ falls back to bug.qa_assignee when blank (QA is the natural
-      #         reviewer for a bug fix; only override when user has someone
-      #         specific in mind).
-      #
-      # Mantis fields may come as "Jane Doe (jdoe)" OR plain "jdoe" — extract
-      # parenthesised username if present, else use the raw value (after a
-      # safety pass to skip placeholders like "<none>" or display-only forms
-      # that contain spaces). Empty → skip the flag (glab rejects empty).
-
-      extract_username() {
-        local raw="$1"
-        if [ -z "$raw" ]; then echo ""; return; fi
-        # "Jane Doe (jdoe)" → jdoe
-        local paren
-        paren=$(echo "$raw" | grep -oE '\(([a-zA-Z0-9._-]+)\)' | tail -1 | tr -d '()')
-        if [ -n "$paren" ]; then echo "$paren"; return; fi
-        # Already bare username (no spaces, no @, no <)
-        if echo "$raw" | grep -qE '^[a-zA-Z0-9._-]+$'; then echo "$raw"; return; fi
-        echo ""  # display-only form (e.g. "Jane Doe", "<none>") — can't resolve
-      }
+      #   1. Bug assignee  → MR --assignee   (whoever owns the bug should own the MR)
+      #   2. input.mr_reviewer → MR --reviewer  (user-typed, optional)
+      # Mantis ASSIGNEE comes as "Jane Doe (jdoe)"; extract (jdoe). Empty
+      # values skip the corresponding flag — glab errors on `--assignee ""`
+      # / `--reviewer ""`.
 
       ASSIGNEE_RAW="$ASSIGNEE"
-      QA_RAW="${QA_ASSIGNEE:-}"
-      INPUT_REVIEWER=$'{{input.mr_reviewer}}'
 
-      ASSIGNEE_USERNAME=$(extract_username "$ASSIGNEE_RAW")
-      QA_USERNAME=$(extract_username "$QA_RAW")
+      ASSIGNEE_USERNAME=$(echo "$ASSIGNEE_RAW" | grep -oE
+      '\(([a-zA-Z0-9._-]+)\)' | tail -1 | tr -d '()')
+
+      REVIEWER_USERNAMES_RAW=$'{{input.mr_reviewer}}'
 
       PEOPLE_FLAGS=()
+
       REVIEWER_LIST=""
 
-      # --- Assignee ---
       if [ -n "$ASSIGNEE_USERNAME" ]; then
         PEOPLE_FLAGS+=(--assignee "$ASSIGNEE_USERNAME")
         echo "Setting MR assignee: $ASSIGNEE_USERNAME (from bug assignee '$ASSIGNEE_RAW')"
       else
-        echo "No usable username from bug assignee '$ASSIGNEE_RAW' — skipping --assignee"
+        echo "No (username) found in bug assignee '$ASSIGNEE_RAW' — skipping --assignee"
       fi
 
-      # --- Reviewer ---
-      # If user filled the form, that wins (comma-separated). Otherwise
-      # default to bug.qa_assignee.
-      if [ -n "$INPUT_REVIEWER" ]; then
-        IFS=',' read -ra __REVS <<< "$INPUT_REVIEWER"
+      # Split input.mr_reviewer on `,`, trim each, skip blanks. Each
+      # reviewer becomes its own --reviewer flag (glab supports the flag
+      # repeated; safer than `--reviewer a,b,c` which depends on glab
+      # version). Bash: IFS=',' read -ra splits; xargs trims surrounding
+      # whitespace including any leftover \r.
+
+      if [ -n "$REVIEWER_USERNAMES_RAW" ]; then
+        IFS=',' read -ra __REVS <<< "$REVIEWER_USERNAMES_RAW"
         for __r in "${__REVS[@]}"; do
           __r=$(echo "$__r" | xargs)
           if [ -n "$__r" ]; then
@@ -1047,17 +976,10 @@ nodes:
         if [ -n "$REVIEWER_LIST" ]; then
           echo "Setting MR reviewers: $REVIEWER_LIST (from input.mr_reviewer)"
         else
-          echo "input.mr_reviewer had only blanks/commas — trying QA fallback"
-          INPUT_REVIEWER=""  # let QA branch take over
+          echo "input.mr_reviewer had only blanks/commas — skipping --reviewer"
         fi
-      fi
-      if [ -z "$REVIEWER_LIST" ] && [ -n "$QA_USERNAME" ]; then
-        PEOPLE_FLAGS+=(--reviewer "$QA_USERNAME")
-        REVIEWER_LIST="$QA_USERNAME"
-        echo "Setting MR reviewer: $QA_USERNAME (default from bug QA assignee '$QA_RAW')"
-      fi
-      if [ -z "$REVIEWER_LIST" ]; then
-        echo "No reviewer (input.mr_reviewer empty, no usable bug QA) — skipping --reviewer"
+      else
+        echo "input.mr_reviewer empty — skipping --reviewer"
       fi
 
       # Capture glab output AND exit code so we can debug failures. Old
