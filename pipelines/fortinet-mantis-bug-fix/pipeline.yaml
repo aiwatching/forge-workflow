@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.14"
+version: "0.7.15"
 
 input:
   project:
@@ -72,8 +72,6 @@ input:
 
       ## Description:
       {summary}
-
-      {description}
 
       ## Technical Description:
       {claude_summary}
@@ -1050,14 +1048,15 @@ nodes:
 
       purpose = (purpose[:199].rstrip() + '…') if len(purpose) > 200 else purpose
 
-      # Per-section length caps. Remote GitLab project rejects MR
+      # Per-section length caps — remote GitLab project rejects MR
       # description fields > 512 chars per section ("Description cannot
-      # be more than 512 characters"). Truncate before substitution.
-      summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
+      # be more than 512 characters"). Cap at 512 inclusive (matches the
+      # remote rule exactly; previously 500 left unnecessary headroom).
+      summary = (summary[:511].rstrip() + '…') if len(summary) > 512 else summary
 
-      description = (description[:499].rstrip() + '…') if len(description) > 500 else description
+      description = (description[:511].rstrip() + '…') if len(description) > 512 else description
 
-      claude = (claude[:499].rstrip() + '…') if len(claude) > 500 else claude
+      claude = (claude[:511].rstrip() + '…') if len(claude) > 512 else claude
 
       out = (tpl.replace('{bug_id}', bug_id)
                 .replace('{purpose}', purpose)
@@ -1105,6 +1104,16 @@ nodes:
 
       ASSIGNEE_USERNAME=$(echo "$ASSIGNEE_RAW" | grep -oE
       '\(([a-zA-Z0-9._-]+)\)' | tail -1 | tr -d '()')
+
+      # Fallback: Mantis sometimes returns just the bare username
+
+      # ("jdoe") instead of "Jane Doe (jdoe)". If the parens-match was
+
+      # empty and the raw value itself looks like a plain username
+
+      # (alphanumeric + ._- , no spaces), use it directly.
+
+      if [ -z "$ASSIGNEE_USERNAME" ] && echo "$ASSIGNEE_RAW" | grep -qE '^[a-zA-Z0-9._-]+$'; then ASSIGNEE_USERNAME="$ASSIGNEE_RAW"; fi
 
       REVIEWER_USERNAMES_RAW=$'{{input.mr_reviewer}}'
 
