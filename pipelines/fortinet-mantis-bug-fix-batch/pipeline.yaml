@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.1"
+version: "0.4.2"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -948,8 +948,7 @@ nodes:
 
       )
 
-      MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR"
-      "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
+      MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR" "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
 
       import sys
 

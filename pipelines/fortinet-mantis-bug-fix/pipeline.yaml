@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.1"
+version: "0.7.2"
 
 input:
   project:
@@ -950,8 +950,7 @@ nodes:
 
       )
 
-      MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR"
-      "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
+      MR_BODY=$(python3 - "$BODY_TPL" "$BUG_ID_VAR" "$SUMMARY_VAR" "$DESCRIPTION_VAR" "$SUMMARY" "$DIFF_STAT" <<'PY'
 
       import sys
 
