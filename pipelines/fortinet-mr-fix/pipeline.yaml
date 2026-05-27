@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.6.1"
+version: "0.6.2"
 
 input:
   project:
@@ -466,7 +466,7 @@ nodes:
       # → forge:stage::needs-review so pre-review picks it back up.
       if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
            -f "add_labels=forge:stage::needs-review" \
-           -f "remove_labels=forge:stage::needs-fix,forge:stage::reviewed" \
+           -f "remove_labels=forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" \
            > /dev/null 2>&1; then
         STAGE_LABEL="forge:stage::needs-review"
       else

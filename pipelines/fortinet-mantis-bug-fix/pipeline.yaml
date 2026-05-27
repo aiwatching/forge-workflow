@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.20"
+version: "0.7.21"
 
 input:
   project:
@@ -1273,7 +1273,7 @@ nodes:
       if [ -n "$MR_IID" ] && [ -n "$PID_ENC" ]; then
         if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
              -f "add_labels=forge:stage::needs-review" \
-             -f "remove_labels=forge:stage::needs-fix,forge:stage::reviewed" \
+             -f "remove_labels=forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" \
              > /dev/null 2>&1; then
           STAGE_LABEL="forge:stage::needs-review"
         else

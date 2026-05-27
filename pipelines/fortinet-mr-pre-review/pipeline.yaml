@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.6.2"
+version: "0.6.3"
 
 input:
   project:
@@ -353,7 +353,7 @@ nodes:
           needs-review)   NEXT_LABEL="forge:stage::needs-fix" ;;
           *)              NEXT_LABEL="forge:stage::needs-fix" ;;  # unparseable → safer side
         esac
-        OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed" | sed "s/${NEXT_LABEL},\?//;s/,$//")
+        OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" | sed "s/${NEXT_LABEL},\?//;s/,$//")
         if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
              -f "add_labels=${NEXT_LABEL}" \
              -f "remove_labels=${OTHERS}" \

@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.20"
+version: "0.4.21"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -1277,7 +1277,7 @@ nodes:
       if [ -n "$MR_IID" ] && [ -n "$PID_ENC" ]; then
         if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
              -f "add_labels=forge:stage::needs-review" \
-             -f "remove_labels=forge:stage::needs-fix,forge:stage::reviewed" \
+             -f "remove_labels=forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" \
              > /dev/null 2>&1; then
           STAGE_LABEL="forge:stage::needs-review"
         else
