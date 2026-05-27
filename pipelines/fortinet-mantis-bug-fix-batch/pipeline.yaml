@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.18"
+version: "0.4.19"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -67,7 +67,7 @@ input:
       the others in the MR description as "follow-ups" for the human
       reviewer to confirm.
   mr_body_template:
-    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {purpose} {description} {description_summary} {claude_summary} {diff_stat}. {summary} = Mantis bug title (verbatim). {description_summary} = Mantis bug description truncated to 500. {purpose} = alias for {summary}."
+    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {description} {claude_summary} {diff_stat}. {summary} = Mantis bug title. {description} = Mantis bug description (truncated to 500). {claude_summary} = Claude's fix summary (truncated to 500)."
     type: string
     multiline: true
     label: "MR body template"
@@ -79,7 +79,7 @@ input:
       MANTIS-{bug_id}
 
       ## Description:
-      {description_summary}
+      {description}
 
       ## Technical Description:
       {claude_summary}
@@ -922,6 +922,7 @@ nodes:
 
       # Pull SUMMARY / PRIORITY / REPORTER / ASSIGNEE / *_B64 from
       # fetch-bug-details — single source of truth for bug metadata.
+
       DETAILS=$'{{nodes.fetch-bug-details.outputs.details}}'
 
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$DETAILS"
@@ -1051,36 +1052,15 @@ nodes:
 
       tpl, bug_id, summary, description, claude, diff_stat = sys.argv[1:7]
 
-      # {purpose} kept as a back-compat alias for the Mantis bug title
+      # GitLab project rejects MR description sections > 512 chars. Cap at 500.
 
-      # (= {summary}). Earlier versions derived it from Claude's first
-
-      # line, which often rendered useless generic text.
-
-      purpose = summary
-
-      # Per-section length caps — GitLab project rejects MR description
-
-      # fields > 512 chars per section. Cap at 500 (user preference).
-
-      summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
-
-      description = (description[:499].rstrip() + '…') if len(description) > 500 else description
-
-      claude = (claude[:499].rstrip() + '…') if len(claude) > 500 else claude
-
-      purpose = (purpose[:499].rstrip() + '…') if len(purpose) > 500 else purpose
-
-      # {description_summary} — alias for the capped Mantis description.
-
-      description_summary = description
+      def cap(s, n=500):
+          return (s[:n-1].rstrip() + '…') if len(s) > n else s
 
       out = (tpl.replace('{bug_id}', bug_id)
-                .replace('{purpose}', purpose)
-                .replace('{summary}', summary)
-                .replace('{description_summary}', description_summary)
-                .replace('{description}', description)
-                .replace('{claude_summary}', claude)
+                .replace('{summary}', cap(summary))
+                .replace('{description}', cap(description))
+                .replace('{claude_summary}', cap(claude))
                 .replace('{diff_stat}', diff_stat))
       print(out)
 
