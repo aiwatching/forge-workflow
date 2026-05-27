@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.6.1"
+version: "0.6.2"
 
 input:
   project:
@@ -341,15 +341,24 @@ nodes:
         POSTED="failed"
       fi
 
-      # Stage label: forge:stage/pre-reviewed (mutually exclusive with
-      # the other forge:stage/* labels). Best-effort.
+      # Stage label based on analyze verdict:
+      #   ready-to-merge → forge:stage::reviewed
+      #   needs-review   → forge:stage::needs-fix
+      # Mutually exclusive with the other forge:stage::* labels.
       STAGE_LABEL="not set"
       if [ "$POSTED" = "yes" ]; then
+        VERDICT=$(grep -A1 '^─── VERDICT ───' "${MR_DIR}/analyze-report" 2>/dev/null | tail -n1 | tr -d '[:space:]')
+        case "$VERDICT" in
+          ready-to-merge) NEXT_LABEL="forge:stage::reviewed" ;;
+          needs-review)   NEXT_LABEL="forge:stage::needs-fix" ;;
+          *)              NEXT_LABEL="forge:stage::needs-fix" ;;  # unparseable → safer side
+        esac
+        OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed" | sed "s/${NEXT_LABEL},\?//;s/,$//")
         if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
-             -f "add_labels=forge:stage/pre-reviewed" \
-             -f "remove_labels=forge:stage/needs-review,forge:stage/reviewed" \
+             -f "add_labels=${NEXT_LABEL}" \
+             -f "remove_labels=${OTHERS}" \
              > /dev/null 2>&1; then
-          STAGE_LABEL="forge:stage/pre-reviewed"
+          STAGE_LABEL="${NEXT_LABEL} (verdict=${VERDICT:-unknown})"
         else
           STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
         fi

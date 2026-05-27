@@ -27,7 +27,7 @@ description: |
     - all MRs in the batch live in the same gitlab_project_id (cross-
       project batches need to be split into separate Fire's)
 
-version: "0.4.0"
+version: "0.4.1"
 
 for_each:
   source: "{{nodes.list-iids.outputs.iids}}"
@@ -518,8 +518,10 @@ nodes:
       #   skipped → verdict label forge:no-fix-needed
       #   close   → verdict label forge:no-merge + close the MR
       #   pushed  → verdict label forge:fix-applied
-      # PLUS in every terminal case, set the stage label forge:stage/reviewed
-      # (mutually exclusive with the other forge:stage/* labels).
+      # PLUS in every terminal case (skipped/close/pushed/failed), set
+      # the stage label forge:stage::needs-review — pre-review pipeline
+      # later flips it to forge:stage::reviewed or ::needs-fix based on
+      # verdict. Mutually exclusive with the other forge:stage::* labels.
       # All best-effort: missing labels return 4xx, we log + continue.
       LABEL_RESULT="not changed"
       CLOSE_RESULT="not closed"
@@ -561,13 +563,13 @@ nodes:
           ;;
       esac
 
-      # Stage label — set on every terminal status (skipped/close/pushed)
-      # since they all represent "Forge has reviewed this MR".
+      # Stage label — every terminal status (skipped/close/pushed/failed)
+      # → forge:stage::needs-review so pre-review picks it back up.
       if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
-           -f "add_labels=forge:stage/reviewed" \
-           -f "remove_labels=forge:stage/needs-review,forge:stage/pre-reviewed" \
+           -f "add_labels=forge:stage::needs-review" \
+           -f "remove_labels=forge:stage::needs-fix,forge:stage::reviewed" \
            > /dev/null 2>&1; then
-        STAGE_LABEL="forge:stage/reviewed"
+        STAGE_LABEL="forge:stage::needs-review"
       else
         STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
       fi
