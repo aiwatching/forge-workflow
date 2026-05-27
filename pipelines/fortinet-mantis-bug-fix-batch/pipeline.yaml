@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.13"
+version: "0.4.14"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -76,9 +76,11 @@ input:
       {purpose}
 
       ## Mantis:
-      MANTIS-{bug_id} — {summary}
+      MANTIS-{bug_id}
 
       ## Description:
+      {summary}
+
       {description}
 
       ## Technical Description:

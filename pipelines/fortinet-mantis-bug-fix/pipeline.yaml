@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.13"
+version: "0.7.14"
 
 input:
   project:
@@ -68,9 +68,11 @@ input:
       {purpose}
 
       ## Mantis:
-      MANTIS-{bug_id} — {summary}
+      MANTIS-{bug_id}
 
       ## Description:
+      {summary}
+
       {description}
 
       ## Technical Description:
