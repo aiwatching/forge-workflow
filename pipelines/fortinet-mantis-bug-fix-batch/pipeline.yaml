@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.7"
+version: "0.4.8"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -163,6 +163,16 @@ nodes:
     prompt: >
       set -e
 
+      # Triage gate — skip worktree setup if triage decided not to act.
+
+      # (If fetch-bug-details emitted __SKIP__ via idempotency gate, triage
+
+      # itself is cascade-skipped and this node never runs at all.)
+
+      TRIAGE_OUT=$'{{nodes.triage.outputs.report}}'
+
+      echo "$TRIAGE_OUT" | grep -q "^ACTION: skip" && { echo "__SKIP__"; exit 0; }
+
       INFO=$'{{nodes.resolve.outputs.info}}'
 
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
@@ -258,6 +268,7 @@ nodes:
     mode: shell
     depends_on:
       - resolve
+      - triage
     outputs:
       - name: wt
         extract: stdout
