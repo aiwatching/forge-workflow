@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.12"
+version: "0.4.13"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -67,16 +67,16 @@ input:
       the others in the MR description as "follow-ups" for the human
       reviewer to confirm.
   mr_body_template:
-    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {description} {claude_summary} {diff_stat}"
+    description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {purpose} {description} {claude_summary} {diff_stat}. {purpose} = Claude's one-line fix summary (cap ~200 chars). {summary} = full Mantis bug title."
     type: string
     multiline: true
     label: "MR body template"
     default: |
       ## Purpose:
-      Fix Mantis bug #{bug_id} — {summary}
+      {purpose}
 
       ## Mantis:
-      MANTIS-{bug_id}
+      MANTIS-{bug_id} — {summary}
 
       ## Description:
       {description}
@@ -1045,10 +1045,18 @@ nodes:
 
       tpl, bug_id, summary, description, claude, diff_stat = sys.argv[1:7]
 
-      # Per-section length caps. Remote GitLab project rejects MR
-      # description fields > 512 chars per section ("Description cannot
-      # be more than 512 characters"). Truncate each value before
-      # substitution with an ellipsis marker.
+      # {purpose} — short one-line summary of what THIS MR does. Take the
+      # first non-empty line of Claude's summary, cap to 200 chars. Lets
+      # the Purpose section render something concrete instead of echoing
+      # the Mantis bug title.
+      _purpose_lines = [ln.strip() for ln in claude.splitlines() if ln.strip()]
+
+      purpose = _purpose_lines[0] if _purpose_lines else 'Auto-fix for Mantis #{0}'.format(bug_id)
+
+      purpose = (purpose[:199].rstrip() + '…') if len(purpose) > 200 else purpose
+
+      # Per-section length caps — remote GitLab project rejects MR
+      # description fields > 512 chars per section.
       summary = (summary[:499].rstrip() + '…') if len(summary) > 500 else summary
 
       description = (description[:499].rstrip() + '…') if len(description) > 500 else description
@@ -1056,6 +1064,7 @@ nodes:
       claude = (claude[:499].rstrip() + '…') if len(claude) > 500 else claude
 
       out = (tpl.replace('{bug_id}', bug_id)
+                .replace('{purpose}', purpose)
                 .replace('{summary}', summary)
                 .replace('{description}', description)
                 .replace('{claude_summary}', claude)
