@@ -133,6 +133,24 @@
       ],
       "score": 0,
       "rating": 0
+    },
+    {
+      "name": "fortinet-mr-pre-review-batch",
+      "display_name": "Fortinet \u00b7 MR Pre-Review (batch)",
+      "description": "Batch the full fortinet-mr-pre-review flow (ingest \u2192 analyze \u2192 post-comment \u2192 notify-chat) over N MRs via framework for_each + before. Two input modes: explicit mr_iids CSV, OR author/labels/target_branch/limit filter resolved at run time. Per-MR behaviour identical to the single pipeline.",
+      "version": "0.1.0",
+      "author": "forge",
+      "tags": [
+        "fortinet",
+        "gitlab",
+        "mr",
+        "review",
+        "pre-review",
+        "batch",
+        "for_each"
+      ],
+      "score": 0,
+      "rating": 0
     }
   ]
 }

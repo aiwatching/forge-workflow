@@ -1,0 +1,586 @@
+name: fortinet-mr-pre-review-batch
+description: |
+  Batch Fortinet GitLab MR pre-review. Two input modes, EITHER:
+    (a) provide `mr_iids` directly (comma-separated), OR
+    (b) leave `mr_iids` empty and provide a filter (`author` /
+        `labels` / `target_branch` / `limit`) — the `list-iids`
+        setup node calls glab and resolves the iid set at run time.
+  The framework's `for_each:` then loops the per-MR flow
+  (ingest → analyze → post-comment → notify-chat) once per iid.
+
+  Per-MR behaviour is identical to fortinet-mr-pre-review (single):
+  fetch metadata + diff + discussion, run a Claude analysis guided
+  by `user_prompt`, post a single '🤖 Forge pre-review:' comment,
+  flip forge:stage::* label based on verdict, open a Forge chat
+  session seeded with the analysis.
+
+  on_failure: continue (default) — one MR failing doesn't stop the
+  rest. Final pipeline status = failed iff any iter failed.
+
+  Fortinet-specific assumptions:
+    - glab CLI authenticated to the Fortinet GitLab host
+    - jq + python3 installed
+    - any chat-capable agent profile is fine (no claude-code
+      needed — this pipeline never edits or pushes)
+    - all MRs in the batch live in the same gitlab_project_id
+      (cross-project batches need separate Fire's)
+
+version: "0.1.0"
+
+for_each:
+  source: "{{nodes.list-iids.outputs.iids}}"
+  as: mr_iid
+  on_failure: continue
+  before: [list-iids]
+
+input:
+  project:
+    description: "Local Forge project name (e.g. FortiNAC)"
+    type: string
+    required: true
+    label: "Project"
+  gitlab_project_id:
+    description: "GitLab project — namespace/repo (e.g. fortinac/FortiNAC) or numeric id"
+    type: string
+    required: true
+    label: "GitLab project id"
+  mr_iids:
+    description: "[Mode A] Comma-separated GitLab MR iids (e.g. '8421, 8422'). Leave EMPTY to use the filter inputs below instead."
+    type: string
+    required: false
+    label: "MR iids (explicit)"
+  author:
+    description: "[Mode B filter] MR author username. '@me' resolves via `glab api user`. Ignored when mr_iids is set."
+    type: string
+    required: false
+    label: "Author filter"
+  labels:
+    description: "[Mode B filter] Comma-separated label names (AND'd). Ignored when mr_iids is set."
+    type: string
+    required: false
+    label: "Labels filter"
+  target_branch:
+    description: "[Mode B filter] Target branch name (e.g. 'main', 'release/7.6'). Ignored when mr_iids is set."
+    type: string
+    required: false
+    label: "Target branch filter"
+  limit:
+    description: "[Mode B filter] Max MRs to fetch when using the filter. Default 20. Ignored when mr_iids is set."
+    type: string
+    required: false
+    default: "20"
+    label: "Limit"
+  user_prompt:
+    description: "Review focus guidance — what Claude should look for, what to avoid saying"
+    type: string
+    multiline: true
+    label: "Review focus prompt"
+    default: |
+      Focus on:
+        - Correctness: does it do what the description claims? Obvious bugs?
+        - Tests: new paths covered? Tests removed without reason?
+        - Security: input validation, authn/authz, secrets, injection.
+        - Backwards compat: API / schema / config changes that break callers.
+
+      Give a clear recommendation: either the MR looks safe to merge,
+      or the human should re-review (and why). Draft / WIP MRs always
+      need re-review.
+
+nodes:
+  # ── 0. list-iids (setup phase) — resolve the iid set ──
+  #
+  # Runs ONCE before the loop body (for_each.before: [list-iids]).
+  # Mode A: input.mr_iids is set → echo it verbatim, ignore the filter.
+  # Mode B: input.mr_iids is empty → call glab to filter open MRs by
+  #         author + labels + target_branch + limit.
+  # Output `iids` is a CSV string consumed by for_each.source.
+  # All diagnostics go to stderr so stdout = pure CSV for the framework.
+  list-iids:
+    project: "{{input.project}}"
+    worktree: false
+    mode: shell
+    prompt: |
+      set -e
+      PROJECT_ID="{{input.gitlab_project_id}}"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
+
+      EXPLICIT="{{input.mr_iids}}"
+      EXPLICIT=$(printf '%s' "$EXPLICIT" | tr -d '[:space:]')
+
+      if [ -n "$EXPLICIT" ]; then
+        IIDS="$EXPLICIT"
+        SRC="explicit input.mr_iids"
+      else
+        AUTHOR="{{input.author}}"
+        LABELS="{{input.labels}}"
+        TARGET_BRANCH="{{input.target_branch}}"
+        LIMIT="{{input.limit}}"
+        [ -z "$LIMIT" ] && LIMIT=20
+
+        if [ -z "$AUTHOR" ] && [ -z "$LABELS" ] && [ -z "$TARGET_BRANCH" ]; then
+          {
+            echo "[list-iids] ERROR: mr_iids is empty AND no filter (author/labels/target_branch) provided."
+            echo "[list-iids] Either set mr_iids or at least one of author/labels/target_branch."
+          } >&2
+          exit 1
+        fi
+
+        if [ "$AUTHOR" = "@me" ]; then
+          AUTHOR=$(glab api user 2>/dev/null | jq -r '.username // empty')
+          if [ -z "$AUTHOR" ]; then
+            echo "[list-iids] ERROR: @me resolution failed — is glab authenticated?" >&2
+            exit 1
+          fi
+        fi
+
+        Q="state=opened&per_page=${LIMIT}"
+        if [ -n "$AUTHOR" ]; then
+          A_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$AUTHOR")
+          Q="${Q}&author_username=${A_ENC}"
+        fi
+        if [ -n "$LABELS" ]; then
+          L_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$LABELS")
+          Q="${Q}&labels=${L_ENC}"
+        fi
+        if [ -n "$TARGET_BRANCH" ]; then
+          T_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$TARGET_BRANCH")
+          Q="${Q}&target_branch=${T_ENC}"
+        fi
+
+        echo "[list-iids] filter query: ${Q}" >&2
+        IIDS=$(glab api "projects/${PID_ENC}/merge_requests?${Q}" | jq -r '.[].iid' | tr '\n' ',' | sed 's/,$//')
+        SRC="filter (author=${AUTHOR:-—} labels=${LABELS:-—} target_branch=${TARGET_BRANCH:-—} limit=${LIMIT})"
+      fi
+
+      COUNT=0
+      [ -n "$IIDS" ] && COUNT=$(printf '%s' "$IIDS" | tr ',' '\n' | grep -c .)
+
+      {
+        echo "[list-iids] source: ${SRC}"
+        echo "[list-iids] count:  ${COUNT}"
+        echo "[list-iids] iids:   ${IIDS:-<empty>}"
+      } >&2
+
+      printf '%s' "$IIDS"
+    outputs:
+      - name: iids
+        extract: stdout
+
+  # ── 1. Ingest — fetch all MR data via glab ──
+  #
+  # Emits env vars (MR_IID, MR_TITLE, MR_URL, branches, author, etc.)
+  # AND base64-encoded meta / diff / notes blobs for the analyze
+  # step. Single source of truth for downstream nodes.
+  # MR_URL is pulled from meta.web_url (no input URL in batch mode).
+  ingest:
+    project: "{{input.project}}"
+    worktree: false
+    mode: shell
+    prompt: |
+      set -e
+      PROJECT_ID="{{input.gitlab_project_id}}"
+      MR_IID="{{mr_iid}}"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
+
+      # Per-MR scratch dir under {{run.tmp_dir}} (= <project>/.forge/worktrees/pipeline-<id>/).
+      # Framework already mkdir-ed pipeline-<id>/; this carves out mr-<iid>/.
+      # All file paths below live inside MR_DIR so cleanup is just rm -rf pipeline-<id>/.
+      MR_DIR="{{run.tmp_dir}}/mr-${MR_IID}"
+      mkdir -p "$MR_DIR"
+
+      # Fetch meta / diff / notes
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" \
+        | jq -c '{
+            id, iid, title, description, state, draft,
+            web_url, source_branch, target_branch,
+            author: .author.username,
+            assignees: [.assignees[]?.username],
+            reviewers: [.reviewers[]?.username],
+            user_notes_count, changes_count
+          }' > "${MR_DIR}/meta.json"
+
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/changes" \
+        | jq -c '{ diff_refs, changes: [.changes[] | { old_path, new_path, new_file, renamed_file, deleted_file, diff }] }' \
+        > "${MR_DIR}/diff.json"
+
+      glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes?per_page=100&sort=asc" \
+        | jq -c '[.[] | select(.system == false) | { id, author: .author.username, body, created_at }]' \
+        > "${MR_DIR}/notes.json"
+
+      # Extract env vars for downstream nodes
+      META="${MR_DIR}/meta.json"
+      TITLE=$(jq -r '.title' "$META")
+      AUTHOR=$(jq -r '.author' "$META")
+      SRC=$(jq -r '.source_branch' "$META")
+      TGT=$(jq -r '.target_branch' "$META")
+      STATE=$(jq -r '.state' "$META")
+      DRAFT=$(jq -r '.draft' "$META")
+      MR_URL=$(jq -r '.web_url' "$META")
+
+      echo "MR_IID=${MR_IID}"
+      echo "GITLAB_PROJECT_ID=${PROJECT_ID}"
+      echo "MR_URL=${MR_URL}"
+      echo "MR_DIR=${MR_DIR}"
+      echo "MR_TITLE=${TITLE}"
+      echo "AUTHOR=${AUTHOR}"
+      echo "SOURCE_BRANCH=${SRC}"
+      echo "TARGET_BRANCH=${TGT}"
+      echo "MR_STATE=${STATE}"
+      echo "MR_DRAFT=${DRAFT}"
+
+      # base64-encoded blobs — analyze decodes inline (avoids
+      # shell escaping issues with multi-line diffs)
+      echo "META_B64=$(base64 < ${MR_DIR}/meta.json | tr -d '\n')"
+      echo "DIFF_B64=$(base64 < ${MR_DIR}/diff.json | tr -d '\n')"
+      echo "NOTES_B64=$(base64 < ${MR_DIR}/notes.json | tr -d '\n')"
+
+      CHANGES_COUNT=$(jq -r '.changes | length' "${MR_DIR}/diff.json")
+      NOTES_COUNT=$(jq -r 'length' "${MR_DIR}/notes.json")
+
+      # ── Skip detection: don't re-post if nothing changed since
+      #    the last Forge pre-review comment.
+      LAST_FORGE_TS=$(jq -r \
+        '[.[] | select(.body | startswith("🤖 Forge pre-review:"))] | sort_by(.created_at) | last | .created_at // ""' \
+        "${MR_DIR}/notes.json")
+      SKIP_PRE_REVIEW=no
+      SKIP_REASON=""
+      if [ -n "$LAST_FORGE_TS" ]; then
+        # Count non-forge notes after LAST_FORGE_TS
+        NEW_NOTES_COUNT=$(jq -r --arg ts "$LAST_FORGE_TS" \
+          '[.[] | select(.created_at > $ts and ((.body // "") | startswith("🤖 Forge pre-review:") | not))] | length' \
+          "${MR_DIR}/notes.json")
+        # Count commits after LAST_FORGE_TS (server-side time compare)
+        NEW_COMMITS_COUNT=$(glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/commits?per_page=100" 2>/dev/null \
+          | jq -r --arg ts "$LAST_FORGE_TS" '[.[] | select(.created_at > $ts)] | length')
+        if [ "${NEW_NOTES_COUNT:-0}" = "0" ] && [ "${NEW_COMMITS_COUNT:-0}" = "0" ]; then
+          SKIP_PRE_REVIEW=yes
+          SKIP_REASON="prior Forge pre-review at ${LAST_FORGE_TS}; no new commits or non-forge comments since"
+        fi
+      fi
+      echo "SKIP_PRE_REVIEW=${SKIP_PRE_REVIEW}"
+      echo "SKIP_REASON=${SKIP_REASON}"
+      echo "LAST_FORGE_TS=${LAST_FORGE_TS}"
+
+      echo ""
+      echo "=== RESULT ==="
+      echo "Fetched MR !${MR_IID} '${TITLE}'"
+      echo "  url:             ${MR_URL}"
+      echo "  branches:        ${SRC} → ${TGT}"
+      echo "  author:          @${AUTHOR}"
+      echo "  state:           ${STATE}${DRAFT:+ (draft)}"
+      echo "  changed files:   ${CHANGES_COUNT}"
+      echo "  existing notes:  ${NOTES_COUNT}"
+      if [ "$SKIP_PRE_REVIEW" = "yes" ]; then
+        echo "  → SKIP analyze/post: ${SKIP_REASON}"
+      fi
+    outputs:
+      - name: context
+        extract: stdout
+
+  # ── 2. Analyze — Claude reads diff + notes, produces a report ──
+  analyze:
+    retries: 2
+    retry_delay_ms: 1500
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [ingest]
+    prompt: |
+      You're reviewing a GitLab merge request as a pre-review
+      assistant. Read the MR metadata, diff, and existing
+      discussion. Produce ONE structured analysis that the
+      downstream node will turn into a GitLab comment + a Forge
+      chat seed.
+
+      ## Reviewer focus (user-provided)
+
+      {{input.user_prompt}}
+
+      ## Input
+
+      The previous step exported env vars and base64 blobs. Run
+      these to decode:
+
+      ```
+      CTX=$'{{nodes.ingest.outputs.context}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$CTX"
+      echo "$META_B64"  | base64 -d
+      echo "$DIFF_B64"  | base64 -d
+      echo "$NOTES_B64" | base64 -d
+      ```
+
+      ## Skip path
+
+      If `SKIP_PRE_REVIEW=yes` in the decoded vars above, the MR
+      has had no changes since the last Forge pre-review. Output
+      EXACTLY this and stop — no real analysis needed:
+
+      ```
+      ─── VERDICT ───
+      ready-to-merge
+
+      ─── FINDINGS ───
+      (skipped — no commits / new comments since last Forge pre-review)
+
+      ─── REPLY DRAFT ───
+      (skipped)
+      ```
+
+      ## What to produce
+
+      Output EXACTLY in this format, no extra prose:
+
+      ```
+      ─── VERDICT ───
+      <one of: ready-to-merge | needs-review>
+
+      ─── FINDINGS ───
+      <bullet list, each line:
+        - <severity: nit|concern|blocker> <file:line> <terse description>
+      If nothing to flag, write: "(none)" on a single line.>
+
+      ─── REPLY DRAFT ───
+      <markdown body posted as the GitLab comment. Must start with
+       ONE of these lines (matching the VERDICT above):
+
+         **Recommendation:** ✅ Looks safe to merge.
+         **Recommendation:** ⚠️ Needs another review — <one-line why>.
+
+       Then 2-5 bullets summarizing what you checked + any findings.
+       Terse. ≤ 200 words. Don't restate what the diff obviously does.
+       Don't repeat the '🤖 Forge pre-review:' header — the post step
+       prepends it.>
+      ```
+
+      Rules:
+        - draft / WIP MRs → always `needs-review`.
+        - Too-large diff → `needs-review`, list what you DID examine.
+        - Cite file:line when raising findings.
+        - Be decisive: pick one verdict, don't hedge.
+    outputs:
+      - name: report
+        extract: stdout
+
+  # ── 3. Post the reply draft as a GitLab comment ──
+  post-comment:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [analyze]
+    mode: shell
+    prompt: |
+      set -e
+      # ANSI-C `$'...'` quoting — engine escapes the substituted multi-
+      # line context (apostrophes, backslashes, newlines) so the eval
+      # below stays a single-line command. Plain `'...'` broke on MR
+      # titles / branch names containing a `'`.
+      INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INGEST_CONTEXT"
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$GITLAB_PROJECT_ID")
+
+      # Skip path: no changes since last Forge pre-review. Don't repost,
+      # don't touch labels — just log + exit clean so the chat seed
+      # can show "skipped".
+      if [ "${SKIP_PRE_REVIEW:-no}" = "yes" ]; then
+        echo "POSTED=skipped"
+        echo "NOTE_ID="
+        echo "MR_URL=${MR_URL}"
+        echo "STAGE_LABEL=unchanged"
+        echo ""
+        echo "=== RESULT ==="
+        echo "Skipped — ${SKIP_REASON:-no changes since prior pre-review}"
+        exit 0
+      fi
+
+      # Unique heredoc marker so the LLM's analyze report can't terminate
+      # the block early if it happens to write the literal string at
+      # column 0 (rare but possible — markdown fences etc.).
+      # {{raw:...}} bypasses the engine's ANSI-C shell escape so the
+      # multi-line analyzer report keeps real newlines inside the
+      # quoted heredoc — otherwise the comment shows literal `\n`.
+      # MR_DIR comes from ingest (decoded above into env).
+      mkdir -p "$MR_DIR"
+      cat > "${MR_DIR}/analyze-report" <<'__FORGE_REPORT_EOF_a93k__'
+      {{raw:nodes.analyze.outputs.report}}
+      __FORGE_REPORT_EOF_a93k__
+
+      # Quoted heredoc — disable shell expansion so Python sees the
+      # script literally. Pass MR_DIR via env so the Python literal can
+      # reference it without bash-expanding ${...} inside the heredoc.
+      MR_DIR_ENV="$MR_DIR" python3 - <<'PY' > "${MR_DIR}/reply-body"
+      import os, re
+      mr_dir = os.environ["MR_DIR_ENV"]
+      with open(f"{mr_dir}/analyze-report") as f:
+          text = f.read().strip()
+      m = re.search(r'─── REPLY DRAFT ───\s*\n(.+)', text, re.DOTALL)
+      print("🤖 Forge pre-review:")
+      print()
+      if m:
+          body = m.group(1).strip()
+          # Defensive: if Claude still includes the '🤖 Forge pre-review:'
+          # header (older prompts asked for it), strip it so we don't double up.
+          body = re.sub(r'^[ \t]*🤖[ \t]*Forge pre-review:[ \t]*\n+', '', body)
+          print(body)
+      else:
+          # Analyze step didn't produce the expected REPLY DRAFT marker.
+          # Don't silently swallow — surface the raw analysis so the
+          # reviewer has SOMETHING actionable instead of "see log".
+          # Cap the dump so a runaway analysis can't blow up the MR.
+          MAX = 6000
+          dump = text if len(text) <= MAX else text[:MAX] + f"\n\n…truncated, full length {len(text)} chars"
+          print("_Analyzer did not produce the expected `REPLY DRAFT` section. Raw output below — pasting verbatim so the reviewer doesn't lose context._")
+          print()
+          print("<details><summary>Raw analyzer output</summary>")
+          print()
+          print("```")
+          print(dump)
+          print("```")
+          print("</details>")
+      PY
+
+      NOTE_ID=$(glab api -X POST \
+        "projects/${PID_ENC}/merge_requests/${MR_IID}/notes" \
+        --field "body=$(cat ${MR_DIR}/reply-body)" \
+        2>/dev/null | jq -r '.id // empty') || NOTE_ID=""
+
+      if [ -n "$NOTE_ID" ]; then
+        POSTED="yes"
+      else
+        POSTED="failed"
+      fi
+
+      # Stage label based on analyze verdict:
+      #   ready-to-merge → forge:stage::reviewed
+      #   needs-review   → forge:stage::needs-fix
+      # Mutually exclusive with the other forge:stage::* labels.
+      STAGE_LABEL="not set"
+      if [ "$POSTED" = "yes" ]; then
+        VERDICT=$(grep -A1 '^─── VERDICT ───' "${MR_DIR}/analyze-report" 2>/dev/null | tail -n1 | tr -d '[:space:]')
+        case "$VERDICT" in
+          ready-to-merge) NEXT_LABEL="forge:stage::reviewed" ;;
+          needs-review)   NEXT_LABEL="forge:stage::needs-fix" ;;
+          *)              NEXT_LABEL="forge:stage::needs-fix" ;;  # unparseable → safer side
+        esac
+        OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" | sed "s/${NEXT_LABEL},\?//;s/,$//")
+        if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+             -f "add_labels=${NEXT_LABEL}" \
+             -f "remove_labels=${OTHERS}" \
+             > /dev/null 2>&1; then
+          STAGE_LABEL="${NEXT_LABEL} (verdict=${VERDICT:-unknown})"
+        else
+          STAGE_LABEL="failed (project may lack the label — create it once: Settings → Labels)"
+        fi
+      fi
+
+      echo "POSTED=${POSTED}"
+      echo "NOTE_ID=${NOTE_ID}"
+      echo "MR_URL=${MR_URL}"
+      echo "STAGE_LABEL=${STAGE_LABEL}"
+      echo ""
+      echo "=== RESULT ==="
+      if [ "$POSTED" = "yes" ]; then
+        echo "Posted pre-review comment as note #${NOTE_ID} on ${MR_URL}"
+        echo "Stage label: ${STAGE_LABEL}"
+      else
+        echo "POST failed — see glab error above. Comment NOT posted."
+      fi
+    outputs:
+      - name: status
+        extract: stdout
+
+  # ── 4. Open a Forge chat session seeded with the analysis ──
+  notify-chat:
+    project: "{{input.project}}"
+    worktree: false
+    depends_on: [post-comment]
+    mode: shell
+    prompt: |
+      set -e
+      # See post-comment node — same `$'...'` ANSI-C quoting reason.
+      INGEST_CONTEXT=$'{{nodes.ingest.outputs.context}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INGEST_CONTEXT"
+
+      # MR_DIR comes from ingest; defensive mkdir for the skip path that
+      # runs before any other node has created it.
+      mkdir -p "$MR_DIR"
+
+      # Skip path: just write a one-liner seed and open chat.
+      if [ "${SKIP_PRE_REVIEW:-no}" = "yes" ]; then
+        cat > "${MR_DIR}/seed-prompt" <<EOF
+      # MR pre-review — ${MR_TITLE}
+
+      MR: ${MR_URL}
+
+      No new commits or non-Forge comments since the last Forge pre-review
+      (${LAST_FORGE_TS:-unknown}). Skipped — nothing to re-post.
+      EOF
+        curl -sS -X POST http://127.0.0.1:8403/api/chat-proxy/sessions \
+          -H 'content-type: application/json' \
+          --data "$(jq -nc \
+            --arg title "MR pre-review (skipped): ${MR_TITLE}" \
+            --arg project "{{input.project}}" \
+            --rawfile seed "${MR_DIR}/seed-prompt" \
+            '{title: $title, project: $project, seed_message: $seed}')" \
+          | jq -r '.session_id // .id // .' > "${MR_DIR}/chat-id"
+        CHAT_ID=$(cat "${MR_DIR}/chat-id")
+        echo "CHAT_ID=${CHAT_ID}"
+        echo "MR_URL=${MR_URL}"
+        echo ""
+        echo "=== RESULT ==="
+        echo "Pre-review skipped — no changes since last Forge pre-review (${LAST_FORGE_TS:-unknown})."
+        exit 0
+      fi
+
+      # Build the seed prompt in Python — analyze report contains
+      # backticks / parens / quotes that an unquoted bash heredoc
+      # would try to evaluate as command substitution. Reads the
+      # report file written earlier by post-comment so we don't have
+      # to embed multi-line text in the Python source (risk: triple
+      # quotes in the report). Quoted heredoc (`<<'PY'`) keeps the
+      # Python literal; single-line scalars come in via env.
+      MR_TITLE_E="$MR_TITLE" MR_URL_E="$MR_URL" AUTHOR_E="$AUTHOR" \
+      SOURCE_BRANCH_E="$SOURCE_BRANCH" TARGET_BRANCH_E="$TARGET_BRANCH" \
+      MR_IID_E="$MR_IID" MR_DIR_E="$MR_DIR" \
+      python3 - <<'PY' > "${MR_DIR}/seed-prompt"
+      import os
+      e = os.environ
+      with open(f"{e['MR_DIR_E']}/analyze-report") as f:
+          report = f.read().strip()
+      print(f"# MR pre-review — {e['MR_TITLE_E']}")
+      print()
+      print(f"MR: {e['MR_URL_E']}")
+      print(f"Author: @{e['AUTHOR_E']}")
+      print(f"Branch: {e['SOURCE_BRANCH_E']} → {e['TARGET_BRANCH_E']}")
+      print()
+      print("─── Forge's analysis ───")
+      print()
+      print(report)
+      print()
+      print("─── Next step ───")
+      print()
+      print("Comment posted on the MR with the recommendation above.")
+      print("What do you want to do?")
+      print(f"  a) Approve (`glab mr approve {e['MR_IID_E']}`)")
+      print("  b) Request changes (follow-up comment)")
+      print("  c) Look closer at specific files / behaviour")
+      print("  d) Nothing — leave it as is")
+      PY
+
+      curl -sS -X POST http://127.0.0.1:8403/api/chat-proxy/sessions \
+        -H 'content-type: application/json' \
+        --data "$(jq -nc \
+          --arg title "MR pre-review: ${MR_TITLE}" \
+          --arg project "{{input.project}}" \
+          --rawfile seed "${MR_DIR}/seed-prompt" \
+          '{title: $title, project: $project, seed_message: $seed}')" \
+        | jq -r '.session_id // .id // .' > "${MR_DIR}/chat-id"
+
+      CHAT_ID=$(cat "${MR_DIR}/chat-id")
+
+      echo "CHAT_ID=${CHAT_ID}"
+      echo "MR_URL=${MR_URL}"
+      echo ""
+      echo "=== RESULT ==="
+      echo "Opened Forge chat session ${CHAT_ID} seeded with the pre-review analysis."
+      echo "Reviewer can take over the chat to decide approve / request-changes / etc."
+    outputs:
+      - name: chat
+        extract: stdout
