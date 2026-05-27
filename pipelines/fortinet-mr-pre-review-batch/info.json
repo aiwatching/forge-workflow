@@ -2,7 +2,7 @@
   "name": "fortinet-mr-pre-review-batch",
   "display_name": "Fortinet · MR Pre-Review (batch)",
   "description": "Batch the full fortinet-mr-pre-review flow (ingest → analyze → post-comment → notify-chat) over N MRs via framework for_each + before. Two input modes: explicit mr_iids CSV, OR author/labels/target_branch/limit filter resolved at run time. Per-MR behaviour identical to the single pipeline — fetch metadata + diff + discussion, post a '🤖 Forge pre-review:' comment, flip forge:stage::* label by verdict, open a Forge chat seeded with the analysis.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "forge",
   "tags": [
     "fortinet",

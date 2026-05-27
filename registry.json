@@ -70,7 +70,7 @@
       "name": "fortinet-mr-pre-review",
       "display_name": "Fortinet \u00b7 MR Pre-Review (single)",
       "description": "Single-shot Fortinet GitLab MR pre-review. User provides an MR URL; pipeline fetches MR meta + diff + discussion, runs Claude analysis per user_prompt focus, posts a '\ud83e\udd16 Forge pre-review:' comment, and opens a Forge chat session for the human reviewer to drill into. Copy of mr-pre-review simplified for manual single runs.",
-      "version": "0.6.4",
+      "version": "0.6.5",
       "author": "forge",
       "tags": [
         "fortinet",
@@ -138,7 +138,7 @@
       "name": "fortinet-mr-pre-review-batch",
       "display_name": "Fortinet \u00b7 MR Pre-Review (batch)",
       "description": "Batch the full fortinet-mr-pre-review flow (ingest \u2192 analyze \u2192 post-comment \u2192 notify-chat) over N MRs via framework for_each + before. Two input modes: explicit mr_iids CSV, OR author/labels/target_branch/limit filter resolved at run time. Per-MR behaviour identical to the single pipeline.",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "author": "forge",
       "tags": [
         "fortinet",

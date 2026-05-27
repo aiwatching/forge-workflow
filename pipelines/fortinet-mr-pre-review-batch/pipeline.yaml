@@ -25,7 +25,7 @@ description: |
     - all MRs in the batch live in the same gitlab_project_id
       (cross-project batches need separate Fire's)
 
-version: "0.1.2"
+version: "0.1.3"
 
 for_each:
   source: "{{nodes.list-iids.outputs.iids}}"
@@ -459,7 +459,10 @@ nodes:
         needs-review)   NEXT_LABEL="forge:stage::needs-fix" ;;
         *)              NEXT_LABEL="forge:stage::needs-fix" ;;  # unparseable → safer side
       esac
-      OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" | sed "s/${NEXT_LABEL},\?//;s/,$//")
+      # BSD sed (macOS) treats `\?` as literal — use plain `,` strip.
+      # NEXT_LABEL is always one of the leading `::` labels, never the
+      # final list element, so `${NEXT_LABEL},` always matches.
+      OTHERS=$(echo "forge:stage::needs-review,forge:stage::needs-fix,forge:stage::reviewed,forge:stage/needs-review,forge:stage/needs-fix,forge:stage/reviewed,forge:stage/pre-reviewed" | sed "s/${NEXT_LABEL},//")
       if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
            -f "add_labels=${NEXT_LABEL}" \
            -f "remove_labels=${OTHERS}" \
