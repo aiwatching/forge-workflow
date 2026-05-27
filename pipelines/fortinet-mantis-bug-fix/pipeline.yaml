@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.10"
+version: "0.7.11"
 
 input:
   project:
@@ -64,22 +64,22 @@ input:
     multiline: true
     label: "MR body template"
     default: |
-      ## Purpose
+      ## Purpose:
       Fix Mantis bug #{bug_id} — {summary}
 
-      ## Mantis
+      ## Mantis:
       MANTIS-{bug_id}
 
-      ## Description
+      ## Description:
       {description}
 
-      ## Technical Description
+      ## Technical Description:
       {claude_summary}
 
-      ## Files changed
+      ## Files changed:
       {diff_stat}
 
-      ## Testing Done
+      ## Testing Done:
       TBD — please verify in CI + smoke test.
   mr_reviewer:
     description: "Comma-separated GitLab usernames (without @) for MR reviewers. Example: 'alice, bob, carol'. Optional — leave empty to skip."

@@ -22,7 +22,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.10"
+version: "0.4.11"
 
 for_each:
   source: "{{input.bug_ids}}"
@@ -72,22 +72,22 @@ input:
     multiline: true
     label: "MR body template"
     default: |
-      ## Purpose
+      ## Purpose:
       Fix Mantis bug #{bug_id} — {summary}
 
-      ## Mantis
+      ## Mantis:
       MANTIS-{bug_id}
 
-      ## Description
+      ## Description:
       {description}
 
-      ## Technical Description
+      ## Technical Description:
       {claude_summary}
 
-      ## Files changed
+      ## Files changed:
       {diff_stat}
 
-      ## Testing Done
+      ## Testing Done:
       TBD — please verify in CI + smoke test.
   mr_reviewer:
     description: "Comma-separated GitLab usernames (without @) for MR reviewers. Example: 'alice, bob, carol'. Optional — leave empty to skip."
