@@ -20,7 +20,7 @@ description: |
       ingest+fetch split, which assumed the recipe pre-extracted
       title/author/branches)
 
-version: "0.6.5"
+version: "0.6.6"
 
 input:
   project:
@@ -75,6 +75,27 @@ nodes:
       PROJECT_ID="{{input.gitlab_project_id}}"
       MR_IID="{{input.mr_iid}}"
       MR_URL="{{input.mr_url}}"
+
+      # Fallback: derive PROJECT_ID + MR_IID from MR_URL when callers
+      # (chat trigger, REST API) didn't pre-fill them. Recipe-driven
+      # callers (schedule) parse the URL via the gitlab_mr_url param
+      # type and pass both fields explicitly — recipe path is unaffected.
+      if [ -z "$PROJECT_ID" ] || [ -z "$MR_IID" ]; then
+        PARSED=$(python3 - "$MR_URL" <<'PY'
+      import sys, re, urllib.parse
+      u = sys.argv[1]
+      p = urllib.parse.urlparse(u)
+      m = re.match(r'^/(.+?)/-/merge_requests/(\d+)/?', p.path)
+      if not m:
+          sys.exit(f"cannot parse MR url: {u}")
+      print(m.group(1))
+      print(m.group(2))
+      PY
+        )
+        [ -z "$PROJECT_ID" ] && PROJECT_ID=$(echo "$PARSED" | sed -n 1p)
+        [ -z "$MR_IID" ]     && MR_IID=$(echo     "$PARSED" | sed -n 2p)
+      fi
+
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
 
       # Per-MR scratch dir under {{run.tmp_dir}} (= <project>/.forge/worktrees/pipeline-<id>/).
