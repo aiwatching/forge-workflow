@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.6.3"
+version: "0.6.4"
 
 input:
   project:
@@ -117,11 +117,13 @@ nodes:
       TITLE=$(jq -r '.title' "$META")
       AUTHOR=$(jq -r '.author.username' "$META")
       LATEST=$(jq -r '[.[] | select(.system == false)] | last.author.username // ""' "$NOTES")
+      HAS_CONFLICT=$(jq -r '.has_conflicts // false' "$META")
       echo "SOURCE_BRANCH=${SRC}"
       echo "TARGET_BRANCH=${TGT}"
       echo "MR_TITLE=${TITLE}"
       echo "MR_AUTHOR=${AUTHOR}"
       echo "LATEST_COMMENTER=${LATEST}"
+      echo "HAS_CONFLICT=${HAS_CONFLICT}"
       echo "MR_DIR=${MR_DIR}"
       echo "META_FILE=${META}"
       echo "NOTES_FILE=${NOTES}"
@@ -171,12 +173,20 @@ nodes:
           Skip entries where `system: true`.
         - DIFF_FILE  — current MR diff
         - META_FILE  — full MR metadata
-      And: SOURCE_BRANCH, TARGET_BRANCH, MR_TITLE, MR_AUTHOR.
+      And: SOURCE_BRANCH, TARGET_BRANCH, MR_TITLE, MR_AUTHOR,
+      HAS_CONFLICT (true/false — GitLab reports whether source vs
+      target currently has merge conflicts).
 
       ## Your task
       1. Read NOTES_FILE + DIFF_FILE.
       2. Identify which comments are unaddressed (not already
          resolved by later code/replies).
+      2.5. Conflict gate — if `HAS_CONFLICT=true`, the MR has merge
+         conflicts against the target branch that block any merge,
+         independent of review feedback. Default to `act` (fix step
+         will merge target in and let Claude resolve the conflicts).
+         Only override to `noop` / `close` when the comment history
+         clearly says abandon.
       3. Decide ONE of FOUR actions per the policy above:
          - `act`   The comments name a concrete, narrow code fix
                    that should be applied. The MR itself is valid;
@@ -313,22 +323,41 @@ nodes:
            cd "$FORGE_WORKTREE"
            git fetch origin "$SOURCE_BRANCH"
            git reset --hard "origin/$SOURCE_BRANCH"
+      1.5. If `HAS_CONFLICT=true` from ingest, merge target in
+           (don't commit yet — we want one commit covering both
+           the conflict resolution and any review-fix edits):
+             git fetch origin "$TARGET_BRANCH"
+             git merge --no-commit --no-ff "origin/$TARGET_BRANCH" || true
+           Then:
+             - Find files with conflict markers: `git diff --name-only --diff-filter=U`
+             - Open each, pick the right resolution per the diff
+               + comment context, remove the `<<<<<<<` / `=======` /
+               `>>>>>>>` markers.
+             - `git add` the resolved files.
+           If HAS_CONFLICT=false, skip this entire step.
       2. Re-read NOTES_FILE + DIFF_FILE.
       3. Make ONLY the changes the actionable comments call for.
-         Stay narrow.
-      4. Commit + push to the MR's source branch:
+         Stay narrow. (If there are no actionable comments and you
+         only got here because of HAS_CONFLICT, skip this step —
+         the conflict resolution alone is the fix.)
+      4. Commit + push to the MR's source branch with ONE commit
+         message that summarises what you did (review fixes,
+         conflict resolution, or both):
            git add -A
-           git commit -m "fix: address review feedback on !{{input.mr_iid}}"
+           git commit -m "<your message>"
            git push origin "HEAD:$SOURCE_BRANCH"
       5. Write a `=== RESULT ===` block (posted on the MR by reply
          step — write in user-facing language):
-            - 1-3 sentence summary of what you changed
+            - 1-3 sentence summary of what you changed (mention
+              "resolved merge conflicts with $TARGET_BRANCH" when
+              applicable)
             - Bulleted list of edited files + the gist of each change
             - The commit SHA (output of `git rev-parse HEAD`)
       6. End with EXACTLY one line on its own:
             FIX_RESULT: pushed
-            FIX_RESULT: failed   (if git push or any step failed —
-                                  include the error in the result block)
+            FIX_RESULT: failed   (if git push, the merge, or any
+                                  resolution step failed — include
+                                  the error in the result block)
 
       Example shape:
       ```
