@@ -22,7 +22,7 @@ description: |
     - the triage prompt's inline fallback policy is removed (the
       default now lives in `input.user_prompt`)
 
-version: "0.6.2"
+version: "0.6.3"
 
 input:
   project:
@@ -83,6 +83,25 @@ nodes:
       set -e
       PROJECT_ID="{{input.gitlab_project_id}}"
       MR_IID="{{input.mr_iid}}"
+      MR_URL="{{input.mr_url}}"
+
+      # Fallback: derive PROJECT_ID + MR_IID from MR_URL when callers
+      # (chat trigger, REST API) didn't pre-fill them. Recipe-driven
+      # callers (schedule) pass both fields explicitly so this no-ops.
+      if [ -z "$PROJECT_ID" ] || [ -z "$MR_IID" ]; then
+        PARSED=$(python3 - "$MR_URL" <<'PY'
+      import sys, re, urllib.parse
+      u = sys.argv[1]
+      p = urllib.parse.urlparse(u)
+      m = re.match(r'^/(.+?)/-/merge_requests/(\d+)/?', p.path)
+      if not m: sys.exit(f"cannot parse MR url: {u}")
+      print(m.group(1)); print(m.group(2))
+      PY
+        )
+        [ -z "$PROJECT_ID" ] && PROJECT_ID=$(echo "$PARSED" | sed -n 1p)
+        [ -z "$MR_IID" ]     && MR_IID=$(echo     "$PARSED" | sed -n 2p)
+      fi
+
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
       MR_DIR="{{run.tmp_dir}}/mr-${MR_IID}"
       mkdir -p "$MR_DIR"
@@ -338,6 +357,23 @@ nodes:
       set -e
       PROJECT_ID="{{input.gitlab_project_id}}"
       MR_IID="{{input.mr_iid}}"
+      MR_URL="{{input.mr_url}}"
+
+      # Same URL fallback as ingest — chat triggers may only pass mr_url.
+      if [ -z "$PROJECT_ID" ] || [ -z "$MR_IID" ]; then
+        PARSED=$(python3 - "$MR_URL" <<'PY'
+      import sys, re, urllib.parse
+      u = sys.argv[1]
+      p = urllib.parse.urlparse(u)
+      m = re.match(r'^/(.+?)/-/merge_requests/(\d+)/?', p.path)
+      if not m: sys.exit(f"cannot parse MR url: {u}")
+      print(m.group(1)); print(m.group(2))
+      PY
+        )
+        [ -z "$PROJECT_ID" ] && PROJECT_ID=$(echo "$PARSED" | sed -n 1p)
+        [ -z "$MR_IID" ]     && MR_IID=$(echo     "$PARSED" | sed -n 2p)
+      fi
+
       PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_ID")
       INFO=$'{{nodes.ingest.outputs.ctx}}'
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"

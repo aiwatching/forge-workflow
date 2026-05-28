@@ -2,7 +2,7 @@
   "name": "fortinet-mr-fix",
   "display_name": "Fortinet · MR Fix (single)",
   "description": "Single-shot Fortinet GitLab MR responder. User provides an MR URL; pipeline reads all comments + diff, triages (act/skip/close/noop) per user_prompt policy, optionally pushes a fixup commit, replies on the MR, and notifies Teams.",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "author": "forge",
   "tags": [
     "fortinet",
