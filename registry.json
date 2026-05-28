@@ -121,7 +121,7 @@
       "name": "fortinet-mr-fix-batch",
       "display_name": "Fortinet \u00b7 MR Fix (batch)",
       "description": "Batch the full fortinet-mr-fix flow (ingest \u2192 triage \u2192 fix \u2192 reply \u2192 cleanup) over N MRs via framework for_each + before. Two input modes: explicit mr_iids CSV, OR author/labels/limit filter resolved at run time by a setup node.",
-      "version": "0.5.1",
+      "version": "0.5.2",
       "author": "forge",
       "tags": [
         "fortinet",
