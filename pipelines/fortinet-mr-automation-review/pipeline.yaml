@@ -61,7 +61,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.6.1"
+version: "0.6.2"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -377,7 +377,7 @@ nodes:
         echo "ERROR: mantis.get_bug($BUG_ID) failed: $(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)" >&2
         exit 1
       fi
-      BUG=$(echo "$RESP" | jq -c '.content | fromjson')
+      BUG=$(echo "$RESP" | jq -c '.content | split("\n\n[watch")[0] | fromjson')
       DESC=$(echo "$BUG" | jq -r '.description // ""')
 
       # First non-empty line after "Automation Test Case:" heading.
@@ -690,7 +690,7 @@ nodes:
         echo "ERROR: tp.get_lab_devices($LAB) failed: $(echo "$RESP" | jq -r '.content // .error' | head -c 400)" >&2
         exit 1
       fi
-      BODY=$(echo "$RESP" | jq -c '.content | fromjson')
+      BODY=$(echo "$RESP" | jq -c '.content | split("\n\n[watch")[0] | fromjson')
       NAC_IP=$(echo "$BODY" | jq -r '.nac_devices[0]?.ip // empty')
       if [ -z "$NAC_IP" ] || [ "$NAC_IP" = "null" ]; then
         echo "ERROR: lab '$LAB' has no NAC device with an IP." >&2
@@ -746,7 +746,7 @@ nodes:
         echo "ERROR: nac.upgrade failed: $(echo "$RESP" | jq -r '.content // .error' | head -c 400)" >&2
         exit 1
       fi
-      BODY=$(echo "$RESP" | jq -c '.content | fromjson')
+      BODY=$(echo "$RESP" | jq -c '.content | split("\n\n[watch")[0] | fromjson')
       REBOOTED=$(echo "$BODY" | jq -r '.captured.rebooted // empty')
       TARGET_BUILD=$(echo "$BODY" | jq -r '.captured.target_build // empty')
       [ -z "$TARGET_BUILD" ] && TARGET_BUILD="$NAC_BUILD"
@@ -846,7 +846,7 @@ nodes:
         if [ "$GV_ERR" = "true" ]; then
           echo "   [${ELAPSED}s] NAC unreachable (rebooting?)" >&2
         else
-          CUR_BUILD=$(echo "$GV" | jq -r '.content | fromjson | .captured.build // empty')
+          CUR_BUILD=$(echo "$GV" | jq -r '.content | split("\n\n[watch")[0] | fromjson | .captured.build // empty')
           echo "   [${ELAPSED}s] current build=$CUR_BUILD (target=$TARGET_BUILD)" >&2
           if [ "$CUR_BUILD" = "$TARGET_BUILD" ]; then
             echo "NAC $NAC_IP now on build $TARGET_BUILD (took ${ELAPSED}s)" >&2
@@ -900,7 +900,7 @@ nodes:
         echo "ERROR: tp.run_pytest failed: $(echo "$RESP" | jq -r '.content // .error' | head -c 400)" >&2
         exit 1
       fi
-      BODY=$(echo "$RESP" | jq -c '.content | fromjson')
+      BODY=$(echo "$RESP" | jq -c '.content | split("\n\n[watch")[0] | fromjson')
       EXEC_ID=$(echo "$BODY" | jq -r '.exec_id // empty')
       [ -z "$EXEC_ID" ] || [ "$EXEC_ID" = "null" ] && { echo "ERROR: no exec_id in response: $BODY" >&2; exit 1; }
 
@@ -946,7 +946,7 @@ nodes:
           sleep 30
           continue
         fi
-        E=$(echo "$GE" | jq -c '.content | fromjson')
+        E=$(echo "$GE" | jq -c '.content | split("\n\n[watch")[0] | fromjson')
         STATUS=$(echo "$E" | jq -r '.status // ""')
         PASS=$(echo "$E"   | jq -r '.pass_count   // 0')
         FAIL=$(echo "$E"   | jq -r '.fail_count   // 0')
