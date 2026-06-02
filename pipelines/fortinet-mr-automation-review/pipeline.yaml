@@ -60,7 +60,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.3.0"
+version: "0.3.1"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -125,7 +125,7 @@ input:
     label: "Jenkins instance name"
 
   jenkins_job:
-    description: "Jenkins job path (e.g. fortinac-build-7.6-token). The pipeline triggers this job with a single branch parameter (see jenkins_branch_param). Required."
+    description: "Jenkins job name (e.g. 'fortinac-build-7.6-token' or nested 'team-x/deploy-app'). The pipeline auto-prefixes `job/` for the URL form, so EITHER 'fortinac-build-7.6-token' OR 'job/fortinac-build-7.6-token' works. Required."
     type: string
     required: true
     label: "Jenkins job path"
@@ -405,11 +405,28 @@ nodes:
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$I"
 
       INSTANCE=$'{{input.jenkins_instance}}'
-      JOB=$'{{input.jenkins_job}}'
+      JOB_RAW=$'{{input.jenkins_job}}'
       BRANCH_PARAM=$'{{input.jenkins_branch_param}}'
-      [ -z "$INSTANCE" ]       && { echo "ERROR: jenkins_instance required" >&2; exit 1; }
-      [ -z "$JOB" ]            && { echo "ERROR: jenkins_job required" >&2; exit 1; }
-      [ -z "$SOURCE_BRANCH" ]  && { echo "ERROR: SOURCE_BRANCH empty" >&2; exit 1; }
+      [ -z "$INSTANCE" ] && { echo "ERROR: jenkins_instance required" >&2; exit 1; }
+      [ -z "$JOB_RAW" ]  && { echo "ERROR: jenkins_job required" >&2; exit 1; }
+      [ -z "$SOURCE_BRANCH" ] && { echo "ERROR: SOURCE_BRANCH empty" >&2; exit 1; }
+
+      # Normalize jenkins_job → URL form `job/<X>` (or `job/<X>/job/<Y>` for
+      # nested). Jenkins URLs always use the `job/` prefix; without it the
+      # endpoint returns 404 (e.g. trigger_build POSTs to
+      # <base>/job/<name>/buildWithParameters). User may type either form:
+      #   "fortinac-build-7.6-token"            → "job/fortinac-build-7.6-token"
+      #   "team-x/deploy-app"                   → "job/team-x/job/deploy-app"
+      #   "job/fortinac-build-7.6-token"        → verbatim
+      #   "view/<v>/job/<x>" or any `job/` form → verbatim
+      JOB_TRIM=$(echo "$JOB_RAW" | sed 's#^/##; s#/$##')
+      if echo "$JOB_TRIM" | grep -qE '(^|/)(job|view)/'; then
+        JOB="$JOB_TRIM"
+      else
+        # split on / and prefix each segment with job/
+        JOB=$(echo "$JOB_TRIM" | awk -F/ '{ for(i=1;i<=NF;i++) printf "%sjob/%s", (i>1?"/":""), $i }')
+      fi
+      echo "→ normalized jenkins_job: '$JOB_RAW' → '$JOB'" >&2
 
       PARAMS=$(jq -nc --arg k "$BRANCH_PARAM" --arg v "$SOURCE_BRANCH" '{($k): $v}')
       ARGS=$(jq -nc --arg i "$INSTANCE" --arg j "$JOB" --argjson p "$PARAMS" \
@@ -567,8 +584,13 @@ nodes:
       NAC_BUILD=$(echo "$OUT_REL" | grep -oE 'build[0-9]+' | head -1 | sed 's/^build//')
       [ -z "$NAC_BUILD" ] && { echo "ERROR: could not parse NAC build number from filename '$OUT_REL'" >&2; exit 1; }
 
-      # Default Jenkins workspace layout.
-      IMAGE_PATH="/var/lib/jenkins/jobs/${JENKINS_JOB}/builds/${BUILD_NUMBER}/archive/${OUT_REL}"
+      # JENKINS_JOB is in URL form (e.g. job/X or job/X/job/Y after
+      # jenkins-trigger's normalization). Jenkins filesystem layout uses
+      # `jobs/` between segments instead of URL's `job/`, so translate:
+      #   "job/fortinac-build-7.6-token"  →  "fortinac-build-7.6-token"
+      #   "job/team/job/sub"              →  "team/jobs/sub"
+      JOB_FS=$(echo "$JENKINS_JOB" | sed -E 's#^job/##; s#/job/#/jobs/#g')
+      IMAGE_PATH="/var/lib/jenkins/jobs/${JOB_FS}/builds/${BUILD_NUMBER}/archive/${OUT_REL}"
 
       echo "OUT_REL=$OUT_REL"
       echo "IMAGE_PATH=$IMAGE_PATH"
