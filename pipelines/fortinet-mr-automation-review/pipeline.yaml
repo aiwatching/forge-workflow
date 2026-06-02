@@ -61,7 +61,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.5.2"
+version: "0.6.0"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -176,24 +176,36 @@ input:
     required: true
     label: "TP lab"
 
+  # NAC SSH credentials — three optional pipeline-level overrides for
+  # nac.upgrade / nac.reboot / nac.get_version. ALL THREE FALL BACK to
+  # the nac connector's saved settings.{username,password,port} when
+  # left empty. Resolution order (first non-empty wins):
+  #   1. this input (per-run override)
+  #   2. (future) TP lab deployinfo user/pass field
+  #   3. nac connector's settings.* (the canonical place)
+  # Recommended setup: fill all three ONCE in Settings → Connectors → NAC
+  # and leave these inputs empty.
+
   nac_ssh_user:
-    description: |
-      Optional SSH username override for nac.upgrade / nac.reboot /
-      nac.get_version. LEAVE EMPTY by default — let the nac connector's
-      saved 'username' setting handle it (set it once in
-      Settings → Connectors → NAC, then it applies everywhere).
-      Resolution order (first non-empty wins):
-        1. this input (per-run override)
-        2. (future) TP lab deployinfo user field — when tp connector
-           exposes it (currently get_lab_devices returns only dev+ip)
-        3. nac connector's settings.username (the right place)
-      If all three are empty you'll see 'ssh: user is required' —
-      either fill it here for this run, or fill the connector setting
-      once.
+    description: "Optional SSH username override. Leave empty → use the nac connector's saved 'username' setting. FortiNAC stock = 'admin'."
     type: string
     required: false
     default: ""
-    label: "NAC SSH user (override — leave empty to use connector default)"
+    label: "NAC SSH user (override)"
+
+  nac_ssh_password:
+    description: "Optional SSH password override. Leave empty → use the nac connector's saved 'password' setting (encrypted at rest, recommended). ⚠️ If you fill this here, it's stored in the pipeline run's state JSON as PLAINTEXT — only use it for non-production NACs or one-off runs."
+    type: string
+    required: false
+    default: ""
+    label: "NAC SSH password (override — plaintext on disk)"
+
+  nac_ssh_port:
+    description: "Optional SSH port override. Leave empty → use the nac connector's saved 'port' setting (default 22)."
+    type: string
+    required: false
+    default: ""
+    label: "NAC SSH port (override)"
 
   nac_upgrade_timeout_sec:
     description: "Max seconds to wait for the NAC to come back on the target build. Default 1200 (20 min)."
@@ -713,18 +725,19 @@ nodes:
       [ -z "$NAC_IP" ]     && { echo "ERROR: NAC_IP empty" >&2; exit 1; }
       [ -z "$IMAGE_PATH" ] && { echo "ERROR: IMAGE_PATH empty" >&2; exit 1; }
 
-      # nac_ssh_user is an OPTIONAL override. Empty → omit `username`
-      # arg so the nac connector's saved settings.username applies.
+      # All three of user/password/port are OPTIONAL overrides — only
+      # include the ones the user actually filled (non-empty). The nac
+      # connector's saved settings fill the rest.
       NAC_USER=$'{{input.nac_ssh_user}}'
-      if [ -n "$NAC_USER" ]; then
-        UP_ARGS=$(jq -nc --arg h "$NAC_IP" --arg ip "$IMAGE_PATH" --arg u "$NAC_USER" \
-          '{host: $h, image_path: $ip, username: $u}')
-        echo "→ nac.upgrade host=$NAC_IP user=$NAC_USER (pipeline override) image=$IMAGE_PATH" >&2
-      else
-        UP_ARGS=$(jq -nc --arg h "$NAC_IP" --arg ip "$IMAGE_PATH" \
-          '{host: $h, image_path: $ip}')
-        echo "→ nac.upgrade host=$NAC_IP user=<connector default> image=$IMAGE_PATH" >&2
-      fi
+      NAC_PASS=$'{{input.nac_ssh_password}}'
+      NAC_PORT=$'{{input.nac_ssh_port}}'
+      UP_ARGS=$(jq -nc --arg h "$NAC_IP" --arg ip "$IMAGE_PATH" \
+        --arg u "$NAC_USER" --arg p "$NAC_PASS" --arg pt "$NAC_PORT" \
+        '{host: $h, image_path: $ip}
+         | (if $u  != "" then .username = $u  else . end)
+         | (if $p  != "" then .password = $p  else . end)
+         | (if $pt != "" then .port     = $pt else . end)')
+      echo "→ nac.upgrade host=$NAC_IP user=${NAC_USER:-<connector>} pass=$([ -n "$NAC_PASS" ] && echo override || echo '<connector>') port=${NAC_PORT:-<connector>} image=$IMAGE_PATH" >&2
       RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
         -H 'content-type: application/json' \
         --data "{\"plugin_id\":\"nac\",\"tool\":\"upgrade\",\"input\":$UP_ARGS}")
@@ -769,13 +782,15 @@ nodes:
       fi
 
       NAC_USER=$'{{input.nac_ssh_user}}'
-      if [ -n "$NAC_USER" ]; then
-        echo "→ NAC did NOT auto-reboot; firing nac.reboot $NAC_IP user=$NAC_USER (override)" >&2
-        RB_ARGS=$(jq -nc --arg h "$NAC_IP" --arg u "$NAC_USER" '{host: $h, username: $u}')
-      else
-        echo "→ NAC did NOT auto-reboot; firing nac.reboot $NAC_IP user=<connector default>" >&2
-        RB_ARGS=$(jq -nc --arg h "$NAC_IP" '{host: $h}')
-      fi
+      NAC_PASS=$'{{input.nac_ssh_password}}'
+      NAC_PORT=$'{{input.nac_ssh_port}}'
+      echo "→ NAC did NOT auto-reboot; firing nac.reboot $NAC_IP user=${NAC_USER:-<connector>} pass=$([ -n "$NAC_PASS" ] && echo override || echo '<connector>') port=${NAC_PORT:-<connector>}" >&2
+      RB_ARGS=$(jq -nc --arg h "$NAC_IP" \
+        --arg u "$NAC_USER" --arg p "$NAC_PASS" --arg pt "$NAC_PORT" \
+        '{host: $h}
+         | (if $u  != "" then .username = $u  else . end)
+         | (if $p  != "" then .password = $p  else . end)
+         | (if $pt != "" then .port     = $pt else . end)')
       RB=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
         -H 'content-type: application/json' \
         --data "{\"plugin_id\":\"nac\",\"tool\":\"reboot\",\"input\":$RB_ARGS}")
@@ -808,13 +823,15 @@ nodes:
       START=$(date +%s)
 
       NAC_USER=$'{{input.nac_ssh_user}}'
-      if [ -n "$NAC_USER" ]; then
-        GV_ARGS=$(jq -nc --arg h "$NAC_IP" --arg u "$NAC_USER" '{host: $h, username: $u}')
-        echo "→ polling nac.get_version $NAC_IP user=$NAC_USER (override) for build $TARGET_BUILD (timeout ${TIMEOUT}s)" >&2
-      else
-        GV_ARGS=$(jq -nc --arg h "$NAC_IP" '{host: $h}')
-        echo "→ polling nac.get_version $NAC_IP user=<connector default> for build $TARGET_BUILD (timeout ${TIMEOUT}s)" >&2
-      fi
+      NAC_PASS=$'{{input.nac_ssh_password}}'
+      NAC_PORT=$'{{input.nac_ssh_port}}'
+      GV_ARGS=$(jq -nc --arg h "$NAC_IP" \
+        --arg u "$NAC_USER" --arg p "$NAC_PASS" --arg pt "$NAC_PORT" \
+        '{host: $h}
+         | (if $u  != "" then .username = $u  else . end)
+         | (if $p  != "" then .password = $p  else . end)
+         | (if $pt != "" then .port     = $pt else . end)')
+      echo "→ polling nac.get_version $NAC_IP user=${NAC_USER:-<connector>} pass=$([ -n "$NAC_PASS" ] && echo override || echo '<connector>') port=${NAC_PORT:-<connector>} for build $TARGET_BUILD (timeout ${TIMEOUT}s)" >&2
 
       while :; do
         ELAPSED=$(( $(date +%s) - START ))
