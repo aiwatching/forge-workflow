@@ -1,11 +1,21 @@
 name: fortinet-mantis-bug-fix-batch
 description: |
-  Batch Fortinet Mantis bug → fix → MR pipeline. User provides a
-  comma-separated list of bug ids; the framework's `for_each:` loops
-  the full 10-node single-bug flow (resolve → worktree-setup →
-  fetch-bug-details → triage → fix-code → push-and-mr → mark-fixed →
-  notify-mantis → notify-teams → cleanup) once per id. One bug ⇒ one
-  iteration ⇒ behaves the same as the original single-bug pipeline.
+  Batch Fortinet Mantis bug → fix → MR pipeline. Two ways to supply
+  the bug list:
+
+  A. Explicit ids (legacy mode) — fill `bug_ids` with a comma-list
+     ("1213844, 1234567"). Filters below are ignored.
+
+  B. Mantis filter (new) — leave `bug_ids` empty and set any combo
+     of: keyword / source / status (comma-separated multi) / assignee
+     / reporter / mantis_project / query (full text) / fix_schedule /
+     category / severity. A first setup node (`discover-ids`) calls
+     mantis.search_bugs with those filters and emits a CSV of bug
+     ids; the for_each loops over them exactly like mode A.
+
+  Either way, the per-bug loop is the full 10-node single-bug flow
+  (resolve → worktree-setup → fetch-bug-details → triage → fix-code →
+  push-and-mr → mark-fixed → notify-mantis → notify-teams → cleanup).
 
   All step output is visible in the same pipeline run — no child
   pipelines, no HTTP roundtrips. Iteration history persists in
@@ -15,31 +25,93 @@ description: |
   on_failure: continue (default) — one bug failing doesn't stop the
   remaining ones. Final pipeline status = failed iff any iter failed.
 
+  v0.5: discover-ids setup node + filter inputs (mode B).
+  v0.5: push-and-mr also tags MR with forge:keyword::automation-test
+        when the bug's Keywords contains "QA Automation Test".
+
   Fortinet-specific assumptions:
     - Mantis connector configured (browser-side) so the
-      fetch-bug-details node can pull bug data via /api/connector-tool
+      discover-ids + fetch-bug-details nodes can call /api/connector-tool
     - glab CLI authenticated to the Fortinet GitLab host
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.4.21"
+version: "0.5.0"
 
 for_each:
-  source: "{{input.bug_ids}}"
+  source: "{{nodes.discover-ids.outputs.bug_ids}}"
   as: bug_id
   on_failure: continue
+  before:
+    - discover-ids
 
 input:
   project:
-    description: "Local Forge project name (e.g. FortiNAC) — must match a directory under your Forge project roots"
+    description: "Local Forge project name (e.g. FortiNAC) — must match a directory under your Forge project roots. Also used as default Mantis project name unless mantis_project overrides."
     type: string
     required: true
     label: "Project"
   bug_ids:
-    description: "Comma-separated Mantis bug ids (e.g. '1213844' for one, '1213844, 1234567' for batch). Whitespace around commas OK. Non-numeric entries skipped."
+    description: "Comma-separated Mantis bug ids (e.g. '1213844' for one, '1213844, 1234567' for batch). Whitespace around commas OK. Non-numeric entries skipped. LEAVE EMPTY to use the filter inputs below instead."
     type: string
-    required: true
-    label: "Bug IDs"
+    required: false
+    default: ""
+    label: "Bug IDs (mode A — explicit)"
+  filter_keyword:
+    description: "Mantis Keywords filter (e.g. 'QA Automation Test', 'regression'). Comma-separate for OR. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Keyword"
+  filter_source:
+    description: "Mantis Source filter (e.g. 'QA', 'Customer', 'Internal'). Comma-separate for multi-value. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Source"
+  filter_status:
+    description: "Mantis status filter — comma-separated (new, feedback, acknowledged, confirmed, assigned, resolved, closed, reopened) or aliases: 'open' (all <80) / 'all' (no filter). Default 'open'. Only used if bug_ids is empty."
+    type: string
+    default: "open"
+    label: "Filter · Status (comma multi)"
+  filter_assignee:
+    description: "Mantis assignee filter — username / full name / numeric user id. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Assignee"
+  filter_reporter:
+    description: "Mantis reporter filter — username / full name / numeric user id. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Reporter"
+  mantis_project:
+    description: "Mantis project NAME (e.g. 'FortiNAC'). Optional — defaults to `input.project` when empty. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Mantis project name"
+  filter_query:
+    description: "Free-text search on bug summary + description. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Full-text query"
+  filter_fix_schedule:
+    description: "Mantis Fix Schedule custom field (e.g. '7.6.7'). Substring match. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Fix Schedule"
+  filter_category:
+    description: "Mantis category filter (e.g. '[FortiNAC] 0_Other'). Forwarded via search_bugs extra_params.category. Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Category"
+  filter_severity:
+    description: "Mantis severity filter — comma-separated. Names ('major'), ids ('60'), or Fortinet S-codes ('S1,S2'). Only used if bug_ids is empty."
+    type: string
+    default: ""
+    label: "Filter · Severity (comma multi)"
+  filter_max_bugs:
+    description: "Max bugs to fetch from search (caps both the search and the for_each loop). Default 25."
+    type: number
+    default: 25
+    label: "Filter · Max bugs"
   base_branch:
     description: "Base branch Claude forks from (e.g. main, 7.6, release/7.6)"
     type: string
@@ -106,6 +178,121 @@ input:
       /cc @{who}
 
 nodes:
+  # ── discover-ids (setup, runs ONCE before the for_each loop) ──
+  # Two-mode bug-id resolver:
+  #   A. input.bug_ids non-empty → echo it verbatim (legacy mode).
+  #   B. input.bug_ids empty → call mantis.search_bugs via the local
+  #      /api/connector-tool loopback endpoint with whatever filter_*
+  #      inputs the user set; emit CSV of returned ids.
+  #
+  # Output `bug_ids` is consumed by `for_each.source` above, so the
+  # framework loops the per-bug DAG once per id. NEVER runs the per-bug
+  # nodes itself — purely setup.
+  discover-ids:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    prompt: |
+      set -e
+
+      # CRITICAL: for_each.source consumes `outputs.bug_ids` as a CSV
+      # and splits on `,`. Anything we print to stdout becomes part of
+      # that CSV. So: all diagnostics go to stderr (>&2). Only the
+      # final clean CSV ("1213844,1234567") is printed to stdout.
+
+      RAW_IDS=$'{{input.bug_ids}}'
+
+      # Mode A: explicit ids → trust them, normalize whitespace.
+      if [ -n "$RAW_IDS" ] && [ "$(echo "$RAW_IDS" | tr -d ' \t\r\n')" != "" ]; then
+        IDS=$(echo "$RAW_IDS" | tr -d ' \t\r' | tr ',' '\n' | grep -E '^[0-9]+$' | paste -sd, -)
+        if [ -z "$IDS" ]; then
+          echo "ERROR: bug_ids was set ('$RAW_IDS') but contained no numeric ids after parsing." >&2
+          exit 1
+        fi
+        N=$(echo "$IDS" | tr ',' '\n' | wc -l | tr -d ' ')
+        echo "Mode A (explicit): $N bug id(s) from input.bug_ids → $IDS" >&2
+        printf '%s' "$IDS"
+        exit 0
+      fi
+
+      # Mode B: filters → mantis.search_bugs
+      Q=$'{{input.filter_query}}'
+      ST=$'{{input.filter_status}}'
+      KW=$'{{input.filter_keyword}}'
+      SRC=$'{{input.filter_source}}'
+      A=$'{{input.filter_assignee}}'
+      R=$'{{input.filter_reporter}}'
+      FS=$'{{input.filter_fix_schedule}}'
+      SEV=$'{{input.filter_severity}}'
+      CAT=$'{{input.filter_category}}'
+      MP=$'{{input.mantis_project}}'
+      PROJ=$'{{input.project}}'
+      LIM='{{input.filter_max_bugs}}'
+
+      # Default Mantis project name to the Forge project name if not overridden.
+      MP_EFFECTIVE="$MP"
+      [ -z "$MP_EFFECTIVE" ] && MP_EFFECTIVE="$PROJ"
+
+      # At least one of the meaningful filters must be set — refuse to
+      # accidentally pull every open bug in the project.
+      if [ -z "$Q$KW$SRC$A$R$FS$SEV$CAT" ]; then
+        echo "ERROR: bug_ids empty AND no meaningful filter set. Need at least one of:" >&2
+        echo "       keyword / source / assignee / reporter / query / fix_schedule / category / severity" >&2
+        echo "       (status alone is too broad — won't run.)" >&2
+        exit 1
+      fi
+
+      # Build args JSON, only including non-empty fields. extra_params
+      # carries category (search_bugs doesn't model it directly).
+      ARGS=$(jq -nc \
+        --arg q "$Q" --arg st "$ST" --arg pn "$MP_EFFECTIVE" --arg fs "$FS" \
+        --arg a "$A" --arg r "$R" --arg kw "$KW" --arg src "$SRC" \
+        --arg sev "$SEV" --arg cat "$CAT" --argjson lim "${LIM:-25}" \
+        '{}
+         | (if $q   != "" then .query        = $q   else . end)
+         | (if $st  != "" then .status       = $st  else . end)
+         | (if $pn  != "" then .project_name = $pn  else . end)
+         | (if $fs  != "" then .fix_schedule = $fs  else . end)
+         | (if $a   != "" then .assignee     = $a   else . end)
+         | (if $r   != "" then .reporter     = $r   else . end)
+         | (if $kw  != "" then .keyword      = $kw  else . end)
+         | (if $src != "" then .source       = $src else . end)
+         | (if $sev != "" then .severity     = $sev else . end)
+         | (if $cat != "" then .extra_params = {category: $cat} else . end)
+         | .limit = $lim')
+
+      echo "Mode B (filter): search_bugs args = $ARGS" >&2
+
+      PAYLOAD="{\"plugin_id\":\"mantis\",\"tool\":\"search_bugs\",\"input\":$ARGS}"
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD")
+
+      IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
+      if [ "$IS_ERR" = "true" ]; then
+        ERRMSG=$(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)
+        echo "ERROR: mantis.search_bugs failed: $ERRMSG" >&2
+        exit 1
+      fi
+
+      BODY=$(echo "$RESP" | jq -r '.content')
+      TOTAL=$(echo "$BODY" | jq -r '.total // 0')
+      TOTAL_MATCH=$(echo "$BODY" | jq -r '.total_matching // .total // 0')
+      IDS=$(echo "$BODY" | jq -r '[.bugs[]?.id // empty] | map(tostring) | unique | join(",")')
+
+      if [ -z "$IDS" ] || [ "$IDS" = "null" ]; then
+        echo "ERROR: search_bugs returned 0 bugs for the filter combo above. Either widen the filter or use bug_ids directly." >&2
+        echo "       (server-side total_matching = $TOTAL_MATCH)" >&2
+        exit 1
+      fi
+
+      N=$(echo "$IDS" | tr ',' '\n' | wc -l | tr -d ' ')
+      echo "Resolved $N bug id(s) (server total_matching=$TOTAL_MATCH, returned=$TOTAL, limit=${LIM:-25})" >&2
+      echo "  ids: $IDS" >&2
+      printf '%s' "$IDS"
+    outputs:
+      - name: bug_ids
+        extract: stdout
+
   resolve:
     worktree: false
     project: "{{input.project}}"
@@ -341,6 +528,9 @@ nodes:
       # short-circuit when bug is already resolved/closed.
       STATUS=$(echo "$BUG" | jq -r '.status // ""' | tr -d '\n')
       RESOLUTION=$(echo "$BUG" | jq -r '.resolution // ""' | tr -d '\n')
+      # Mantis "Keywords" column — used downstream to derive MR labels
+      # (e.g. "QA Automation Test" → forge:keyword::automation-test).
+      KEYWORDS=$(echo "$BUG" | jq -r '.keywords // ""' | tr -d '\n')
 
       echo "BUG_ID=$BUG_ID"
       echo "SUMMARY=$SUMMARY"
@@ -350,6 +540,7 @@ nodes:
       echo "REPORTER=$REPORTER"
       echo "ASSIGNEE=$ASSIGNEE"
       echo "STATUS=$STATUS"
+      echo "KEYWORDS=$KEYWORDS"
 
       # ── Idempotency gate ─────────────────────────────────────────
       # Find the last bugnote we (Forge) added — body contains the
@@ -1286,6 +1477,34 @@ nodes:
       fi
 
       echo "STAGE_LABEL=$STAGE_LABEL"
+
+
+      # Keyword-derived label: if the Mantis bug's Keywords column
+      # contains "QA Automation Test" (case-insensitive substring),
+      # tag the MR with forge:keyword::automation-test. Reviewers /
+      # downstream filters can then spot bugs that already have an
+      # automation testcase attached (vs. ones still needing one).
+      # Best-effort — failure to attach the label doesn't fail the node.
+
+      KEYWORD_LABEL="not set"
+
+      KEYWORDS_LC=$(echo "$KEYWORDS" | tr '[:upper:]' '[:lower:]')
+
+      if echo "$KEYWORDS_LC" | grep -q "qa automation test"; then
+        if [ -n "$MR_IID" ] && [ -n "$PID_ENC" ]; then
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+               -f "add_labels=forge:keyword::automation-test" \
+               > /dev/null 2>&1; then
+            KEYWORD_LABEL="forge:keyword::automation-test"
+          else
+            KEYWORD_LABEL="failed (project may lack the label — create once: Settings → Labels)"
+          fi
+        fi
+      else
+        KEYWORD_LABEL="skipped (keywords='$KEYWORDS' does not match 'QA Automation Test')"
+      fi
+
+      echo "KEYWORD_LABEL=$KEYWORD_LABEL"
     mode: shell
     depends_on:
       - fix-code

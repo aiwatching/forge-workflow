@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.21"
+version: "0.7.22"
 
 input:
   project:
@@ -333,6 +333,9 @@ nodes:
       # short-circuit when bug is already resolved/closed.
       STATUS=$(echo "$BUG" | jq -r '.status // ""' | tr -d '\n')
       RESOLUTION=$(echo "$BUG" | jq -r '.resolution // ""' | tr -d '\n')
+      # Mantis "Keywords" column — used downstream to derive MR labels
+      # (e.g. "QA Automation Test" → forge:keyword::automation-test).
+      KEYWORDS=$(echo "$BUG" | jq -r '.keywords // ""' | tr -d '\n')
 
       echo "BUG_ID=$BUG_ID"
       echo "SUMMARY=$SUMMARY"
@@ -342,6 +345,7 @@ nodes:
       echo "REPORTER=$REPORTER"
       echo "ASSIGNEE=$ASSIGNEE"
       echo "STATUS=$STATUS"
+      echo "KEYWORDS=$KEYWORDS"
 
       # ── Idempotency gate ─────────────────────────────────────────
       # Find the last bugnote we (Forge) added — body contains the
@@ -1282,6 +1286,34 @@ nodes:
       fi
 
       echo "STAGE_LABEL=$STAGE_LABEL"
+
+
+      # Keyword-derived label: if the Mantis bug's Keywords column
+      # contains "QA Automation Test" (case-insensitive substring),
+      # tag the MR with forge:keyword::automation-test. Reviewers /
+      # downstream filters can then spot bugs that already have an
+      # automation testcase attached (vs. ones still needing one).
+      # Best-effort — failure to attach the label doesn't fail the node.
+
+      KEYWORD_LABEL="not set"
+
+      KEYWORDS_LC=$(echo "$KEYWORDS" | tr '[:upper:]' '[:lower:]')
+
+      if echo "$KEYWORDS_LC" | grep -q "qa automation test"; then
+        if [ -n "$MR_IID" ] && [ -n "$PID_ENC" ]; then
+          if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+               -f "add_labels=forge:keyword::automation-test" \
+               > /dev/null 2>&1; then
+            KEYWORD_LABEL="forge:keyword::automation-test"
+          else
+            KEYWORD_LABEL="failed (project may lack the label — create once: Settings → Labels)"
+          fi
+        fi
+      else
+        KEYWORD_LABEL="skipped (keywords='$KEYWORDS' does not match 'QA Automation Test')"
+      fi
+
+      echo "KEYWORD_LABEL=$KEYWORD_LABEL"
     mode: shell
     depends_on:
       - fix-code

@@ -1,14 +1,15 @@
 {
   "name": "fortinet-mantis-bug-fix-batch",
-  "display_name": "Fortinet · Mantis Bug Fix (batch with for_each)",
-  "description": "Comma-separated list of Mantis bug ids → for each id, runs the full 10-node fortinet-mantis-bug-fix flow (resolve → fix → MR → notify). One pipeline run, N iterations visible in same UI, no child dispatches. Single id behaves identically to single-bug pipeline.",
-  "version": "0.4.21",
+  "display_name": "Fortinet · Mantis Bug Fix (batch — ids OR filter)",
+  "description": "Batch Fortinet Mantis bug-fix flow. Two ways to pick bugs: (A) comma-list of bug ids in `bug_ids`, OR (B) Mantis filter (keyword/source/status/assignee/reporter/project/query/fix_schedule/category/severity). When bug_ids is empty, a setup node calls mantis.search_bugs to discover ids, then for_each loops the full 10-node single-bug DAG (resolve → fix → MR → notify) per id. v0.5 adds the filter mode + tags MRs with forge:keyword::automation-test when the bug's Keywords contains 'QA Automation Test'.",
+  "version": "0.5.0",
   "author": "forge",
   "tags": [
     "fortinet",
     "mantis",
     "bug-fix",
     "batch",
+    "filter",
     "for_each",
     "claude-code"
   ],
