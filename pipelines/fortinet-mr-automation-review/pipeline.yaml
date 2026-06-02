@@ -61,7 +61,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.4.1"
+version: "0.4.2"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -106,10 +106,10 @@ input:
     label: "Label · on PASS"
 
   label_fail:
-    description: "Label to ADD on test fail (any failed or errored test). Default: forge:stage::tested_failed"
+    description: "Label to ADD on test fail (any failed or errored test). Default: forge:stage::needs_fix — signals the MR needs developer attention (consistent with the rest of the Fortinet stage machine: ::needs_fix flows back into the bug-fix loop)."
     type: string
     required: false
-    default: "forge:stage::tested_failed"
+    default: "forge:stage::needs_fix"
     label: "Label · on FAIL"
 
   max_mrs:
