@@ -1,4 +1,4 @@
-name: fortinet-mr-test
+name: fortinet-mr-automation-review
 description: |
   Automation-test orchestrator for GitLab MRs.
 
@@ -60,7 +60,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.2.1"
+version: "0.3.0"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
