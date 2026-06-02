@@ -60,7 +60,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.2.0"
+version: "0.2.1"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -79,36 +79,42 @@ input:
   mr_iids:
     description: "Optional comma-list of MR IIDs (e.g. '14718, 14719'). LEAVE EMPTY to discover via the label filters below."
     type: string
+    required: false
     default: ""
     label: "MR IIDs (optional — explicit)"
 
   label_stage:
     description: "Stage label used to identify MRs awaiting automation test. discover-mrs filters on this AND label_keyword (AND). Default: forge:stage::needs_review"
     type: string
+    required: false
     default: "forge:stage::needs_review"
     label: "Stage label filter"
 
   label_keyword:
     description: "Keyword label used to identify automation-eligible MRs (set by the fortinet-mantis-bug-fix pipeline when the bug's Keywords contains 'QA Automation Test'). Default: forge:keyword::automation_test"
     type: string
+    required: false
     default: "forge:keyword::automation_test"
     label: "Keyword label filter"
 
   label_pass:
     description: "Label to ADD on test pass. Default: forge:stage::tested_passed"
     type: string
+    required: false
     default: "forge:stage::tested_passed"
     label: "Label · on PASS"
 
   label_fail:
     description: "Label to ADD on test fail (any failed or errored test). Default: forge:stage::tested_failed"
     type: string
+    required: false
     default: "forge:stage::tested_failed"
     label: "Label · on FAIL"
 
   max_mrs:
     description: "Cap on number of MRs returned by discover-mrs. Default 10."
     type: number
+    required: false
     default: 10
     label: "Max MRs to test"
 
@@ -127,18 +133,21 @@ input:
   jenkins_branch_param:
     description: "Name of the Jenkins job parameter that takes the source branch (e.g. 'BRANCH' or 'SOURCE_BRANCH'). Inspect via jenkins.get_job_params if unsure."
     type: string
+    required: false
     default: "BRANCH"
     label: "Jenkins branch parameter name"
 
   jenkins_queue_timeout_sec:
     description: "Max seconds to wait for the Jenkins build to leave the queue (i.e. be assigned an executor). Default 600 (10 min)."
     type: number
+    required: false
     default: 600
     label: "Jenkins queue wait timeout (sec)"
 
   jenkins_build_timeout_sec:
     description: "Max seconds to wait for the Jenkins build itself (after it leaves the queue). Default 3600 (1h)."
     type: number
+    required: false
     default: 3600
     label: "Jenkins build timeout (sec)"
 
@@ -151,18 +160,21 @@ input:
   nac_upgrade_timeout_sec:
     description: "Max seconds to wait for the NAC to come back on the target build. Default 1200 (20 min)."
     type: number
+    required: false
     default: 1200
     label: "NAC upgrade timeout (sec)"
 
   test_timeout_sec:
     description: "Max seconds to wait for the pytest exec to reach a terminal state (Done|Failed|Cancelled). Default 7200 (2h)."
     type: number
+    required: false
     default: 7200
     label: "Test exec timeout (sec)"
 
   comment_template:
     description: "MR comment template posted after the test settles. Placeholders: {status} {pass} {fail} {skip} {error} {total} {report_url} {exec_id} {nac_ip} {image_build} {testcase}"
     type: string
+    required: false
     multiline: true
     label: "MR comment template"
     default: |

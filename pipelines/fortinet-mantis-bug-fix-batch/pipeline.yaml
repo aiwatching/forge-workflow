@@ -36,7 +36,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.5.1"
+version: "0.5.2"
 
 for_each:
   source: "{{nodes.discover-ids.outputs.bug_ids}}"
@@ -60,56 +60,67 @@ input:
   filter_keyword:
     description: "Mantis Keywords filter (e.g. 'QA Automation Test', 'regression'). Comma-separate for OR. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Keyword"
   filter_source:
     description: "Mantis Source filter (e.g. 'QA', 'Customer', 'Internal'). Comma-separate for multi-value. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Source"
   filter_status:
     description: "Mantis status filter — comma-separated (new, feedback, acknowledged, confirmed, assigned, resolved, closed, reopened) or aliases: 'open' (all <80) / 'all' (no filter). Default 'open'. Only used if bug_ids is empty."
     type: string
+    required: false
     default: "open"
     label: "Filter · Status (comma multi)"
   filter_assignee:
     description: "Mantis assignee filter — username / full name / numeric user id. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Assignee"
   filter_reporter:
     description: "Mantis reporter filter — username / full name / numeric user id. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Reporter"
   mantis_project:
     description: "Mantis project NAME (e.g. 'FortiNAC'). Optional — defaults to `input.project` when empty. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Mantis project name"
   filter_query:
     description: "Free-text search on bug summary + description. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Full-text query"
   filter_fix_schedule:
     description: "Mantis Fix Schedule custom field (e.g. '7.6.7'). Substring match. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Fix Schedule"
   filter_category:
     description: "Mantis category filter (e.g. '[FortiNAC] 0_Other'). Forwarded via search_bugs extra_params.category. Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Category"
   filter_severity:
     description: "Mantis severity filter — comma-separated. Names ('major'), ids ('60'), or Fortinet S-codes ('S1,S2'). Only used if bug_ids is empty."
     type: string
+    required: false
     default: ""
     label: "Filter · Severity (comma multi)"
   filter_max_bugs:
     description: "Max bugs to fetch from search (caps both the search and the for_each loop). Default 25."
     type: number
+    required: false
     default: 25
     label: "Filter · Max bugs"
   base_branch:
@@ -121,6 +132,7 @@ input:
   user_prompt:
     description: "Extra focus / constraint guidance appended to the Claude fix prompt"
     type: string
+    required: false
     multiline: true
     label: "Fix focus prompt"
     default: |
@@ -141,6 +153,7 @@ input:
   mr_body_template:
     description: "GitLab MR description template (Markdown). Placeholders: {bug_id} {summary} {description} {claude_summary} {diff_stat}. {summary} = Mantis bug title. {description} = Mantis bug description (truncated to 500). {claude_summary} = Claude's fix summary (truncated to 500)."
     type: string
+    required: false
     multiline: true
     label: "MR body template"
     default: |
@@ -164,11 +177,13 @@ input:
   mr_reviewer:
     description: "Comma-separated GitLab usernames (without @) for MR reviewers. Example: 'alice, bob, carol'. Optional — leave empty to skip."
     type: string
+    required: false
     label: "MR reviewers (comma-separated usernames)"
     default: ""
   teams_message_template:
     description: "Teams notification template. Placeholders: {bug_id} {summary} {role} {mr_url} {who}"
     type: string
+    required: false
     multiline: true
     label: "Teams message template"
     default: |
