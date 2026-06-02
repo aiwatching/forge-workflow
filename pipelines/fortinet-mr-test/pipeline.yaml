@@ -1,0 +1,780 @@
+name: fortinet-mr-test
+description: |
+  Automation-test orchestrator for GitLab MRs.
+
+  Find MRs in a Fortinet GitLab project that carry BOTH a stage label
+  (default: forge:stage::needs_review) AND a keyword label
+  (default: forge:keyword::automation_test). Both label strings are
+  pipeline inputs — no hard-coded values.
+
+  For each matching MR (serial, on_failure: continue):
+
+    1. resolve         — read the MR via glab, extract source_branch
+                         and `MANTIS-<bug_id>` from its description
+    2. fetch-mantis    — mantis.get_bug → pull the
+                         "Automation Test Case:" path from the bug's
+                         description (the line/block right after that
+                         heading)
+    3. jenkins-build   — jenkins.trigger_build for the source branch,
+                         poll get_queue_item until the build is
+                         assigned, then get_build until it finishes,
+                         then list_artifacts to find the `.out`
+                         image; emit IMAGE_PATH for nac.upgrade
+    4. tp-lab-devices  — tp.get_lab_devices for the chosen lab; pick
+                         the first NAC IP
+    5. nac-upgrade     — nac.upgrade(NAC_IP, IMAGE_PATH); poll
+                         nac.get_version until the build matches the
+                         Jenkins build number (or timeout)
+    6. tp-test         — tp.run_pytest with the lab + testcase path
+                         (from step 2); poll tp.get_test_execution
+                         until status=Done|Failed|Cancelled
+    7. post-to-mr      — glab api: post a comment with the result +
+                         counts + report link; remove the stage label;
+                         add forge:stage::tested_passed OR
+                         forge:stage::tested_failed (configurable
+                         prefixes). Keyword label is left alone.
+
+  Serial execution: the NAC + lab are shared hardware, so two MRs
+  upgrading the same NAC in parallel would race. Stick with
+  for_each.on_failure=continue (default) so one bad MR doesn't kill
+  the rest.
+
+  Two ways to pick MRs:
+    A. mr_iids non-empty (e.g. "14718, 14719") → use those.
+    B. mr_iids empty → discover via glab using the two label filters.
+
+version: "0.1.0"
+
+for_each:
+  source: "{{nodes.discover-mrs.outputs.mr_iids}}"
+  as: mr_iid
+  on_failure: continue
+  before:
+    - discover-mrs
+
+input:
+  project:
+    description: "Local Forge project name (e.g. FortiNAC) — used to locate the git repo (we run glab from inside it to discover host + project path)."
+    type: string
+    required: true
+    label: "Project"
+
+  mr_iids:
+    description: "Optional comma-list of MR IIDs (e.g. '14718, 14719'). LEAVE EMPTY to discover via the label filters below."
+    type: string
+    default: ""
+    label: "MR IIDs (optional — explicit)"
+
+  label_stage:
+    description: "Stage label used to identify MRs awaiting automation test. Discover-mrs filters on this AND label_keyword (logical AND). Default: forge:stage::needs_review"
+    type: string
+    default: "forge:stage::needs_review"
+    label: "Stage label filter"
+
+  label_keyword:
+    description: "Keyword label used to identify automation-eligible MRs (set by the fortinet-mantis-bug-fix pipeline when the bug's Keywords contains 'QA Automation Test'). Default: forge:keyword::automation_test"
+    type: string
+    default: "forge:keyword::automation_test"
+    label: "Keyword label filter"
+
+  label_pass:
+    description: "Label to ADD on test pass. Default: forge:stage::tested_passed"
+    type: string
+    default: "forge:stage::tested_passed"
+    label: "Label · on PASS"
+
+  label_fail:
+    description: "Label to ADD on test fail (any failed or errored test). Default: forge:stage::tested_failed"
+    type: string
+    default: "forge:stage::tested_failed"
+    label: "Label · on FAIL"
+
+  max_mrs:
+    description: "Cap on number of MRs returned by the discover step. Default 10."
+    type: number
+    default: 10
+    label: "Max MRs to test"
+
+  jenkins_instance:
+    description: "Jenkins instance name (matches a row in the jenkins connector's `instances` settings). Required."
+    type: string
+    required: true
+    label: "Jenkins instance name"
+
+  jenkins_job:
+    description: "Jenkins job path (e.g. fortinac-build-7.6-token). The pipeline triggers this job with a single branch parameter (see jenkins_branch_param). Required."
+    type: string
+    required: true
+    label: "Jenkins job path"
+
+  jenkins_branch_param:
+    description: "Name of the Jenkins job parameter that takes the source branch (e.g. 'BRANCH' or 'SOURCE_BRANCH'). Inspect via jenkins.get_job_params if unsure."
+    type: string
+    default: "BRANCH"
+    label: "Jenkins branch parameter name"
+
+  jenkins_build_timeout_sec:
+    description: "Max seconds to wait for the Jenkins build to finish. Default 3600 (1h)."
+    type: number
+    default: 3600
+    label: "Jenkins build timeout (sec)"
+
+  tp_lab:
+    description: "TP automation lab name (e.g. AT16_Combined_FSW). The pipeline picks the lab's first NAC for upgrade + uses the same lab for run_pytest. Required."
+    type: string
+    required: true
+    label: "TP lab"
+
+  nac_upgrade_timeout_sec:
+    description: "Max seconds to wait for the NAC to come back on the target build. Default 1200 (20 min)."
+    type: number
+    default: 1200
+    label: "NAC upgrade timeout (sec)"
+
+  test_timeout_sec:
+    description: "Max seconds to wait for the pytest exec to reach a terminal state (Done|Failed|Cancelled). Default 7200 (2h)."
+    type: number
+    default: 7200
+    label: "Test exec timeout (sec)"
+
+  comment_template:
+    description: "MR comment template posted after the test settles. Placeholders: {status} {pass} {fail} {skip} {error} {total} {report_url} {exec_id} {nac_ip} {image_build} {testcase}"
+    type: string
+    multiline: true
+    label: "MR comment template"
+    default: |
+      🤖 Forge automation test result — **{status}**
+
+      Counts: ✅ {pass} / ❌ {fail} / ⚠️ {error} / ⏭ {skip} / total {total}
+
+      - Testcase: `{testcase}`
+      - NAC: `{nac_ip}` (upgraded to build {image_build})
+      - TP exec id: #{exec_id}
+      - Report: {report_url}
+
+      ref: mr-test-{exec_id}
+
+nodes:
+  # ────────────────────────────────────────────────────────────────
+  # discover-mrs (setup, runs ONCE before for_each)
+  # Two modes:
+  #   A. input.mr_iids non-empty → use those
+  #   B. mr_iids empty → glab api search for MRs with BOTH labels
+  # Output `mr_iids` is consumed by for_each.source (CSV). Diagnostic
+  # output goes to STDERR only — stdout must be the clean CSV.
+  # ────────────────────────────────────────────────────────────────
+  discover-mrs:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    prompt: |
+      set -e
+
+      cd "$(git rev-parse --show-toplevel)"
+      command -v glab >/dev/null || { echo "ERROR: glab CLI not installed." >&2; exit 1; }
+      command -v jq   >/dev/null || { echo "ERROR: jq not installed." >&2; exit 1; }
+
+      RAW=$'{{input.mr_iids}}'
+      if [ -n "$RAW" ] && [ "$(echo "$RAW" | tr -d ' \t\r\n')" != "" ]; then
+        IIDS=$(echo "$RAW" | tr -d ' \t\r' | tr ',' '\n' | grep -E '^[0-9]+$' | paste -sd, -)
+        [ -z "$IIDS" ] && { echo "ERROR: mr_iids='$RAW' has no numeric ids." >&2; exit 1; }
+        N=$(echo "$IIDS" | tr ',' '\n' | wc -l | tr -d ' ')
+        echo "Mode A (explicit): $N MR IID(s) → $IIDS" >&2
+        printf '%s' "$IIDS"
+        exit 0
+      fi
+
+      LBL_STAGE=$'{{input.label_stage}}'
+      LBL_KW=$'{{input.label_keyword}}'
+      LIMIT='{{input.max_mrs}}'
+      [ -z "$LBL_STAGE" ] && { echo "ERROR: label_stage must be set" >&2; exit 1; }
+      [ -z "$LBL_KW" ]    && { echo "ERROR: label_keyword must be set" >&2; exit 1; }
+
+      REMOTE=$(git remote get-url origin)
+      PROJECT_PATH=$(echo "$REMOTE" | sed -E 's#^(https?://[^/]+/|git@[^:]+:)##; s#\.git$##')
+      [ -z "$PROJECT_PATH" ] && { echo "ERROR: could not derive project path from origin '$REMOTE'" >&2; exit 1; }
+
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_PATH")
+      LABELS_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(','.join(sys.argv[1:]), safe=''))" "$LBL_STAGE" "$LBL_KW")
+      MAX=${LIMIT:-10}
+
+      echo "Mode B (filter): glab api projects/$PID_ENC/merge_requests?state=opened&labels=$LBL_STAGE,$LBL_KW (cap=$MAX)" >&2
+
+      RESP=$(glab api "projects/${PID_ENC}/merge_requests?state=opened&labels=${LABELS_ENC}&per_page=${MAX}" 2>&1) || {
+        echo "ERROR: glab api failed:" >&2
+        echo "$RESP" | head -20 >&2
+        exit 1
+      }
+
+      IIDS=$(echo "$RESP" | jq -r '[.[]?.iid // empty] | map(tostring) | unique | join(",")')
+      if [ -z "$IIDS" ] || [ "$IIDS" = "null" ]; then
+        echo "ERROR: 0 MRs matched labels (state=opened, labels='$LBL_STAGE','$LBL_KW')." >&2
+        echo "       Widen the filter, drop a label, or pass mr_iids explicitly." >&2
+        exit 1
+      fi
+
+      N=$(echo "$IIDS" | tr ',' '\n' | wc -l | tr -d ' ')
+      echo "Resolved $N MR IID(s): $IIDS" >&2
+      printf '%s' "$IIDS"
+    outputs:
+      - name: mr_iids
+        extract: stdout
+
+  # ────────────────────────────────────────────────────────────────
+  # resolve (per MR) — fetch MR details + extract MANTIS bug id
+  # ────────────────────────────────────────────────────────────────
+  resolve:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    prompt: |
+      set -e
+
+      cd "$(git rev-parse --show-toplevel)"
+      MR_IID="{{mr_iid}}"
+      [ -z "$MR_IID" ] && { echo "ERROR: mr_iid empty" >&2; exit 1; }
+
+      REMOTE=$(git remote get-url origin)
+      HOST=$(echo "$REMOTE" | sed -E 's#^https?://##; s#git@##; s#[:/].*##')
+      PROJECT_PATH=$(echo "$REMOTE" | sed -E 's#^(https?://[^/]+/|git@[^:]+:)##; s#\.git$##')
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_PATH")
+
+      MR_JSON=$(glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" 2>&1) || {
+        echo "ERROR: glab api MR #$MR_IID failed:" >&2
+        echo "$MR_JSON" | head -20 >&2
+        exit 1
+      }
+
+      SOURCE_BRANCH=$(echo "$MR_JSON" | jq -r '.source_branch // ""')
+      TARGET_BRANCH=$(echo "$MR_JSON" | jq -r '.target_branch // ""')
+      MR_TITLE=$(echo "$MR_JSON" | jq -r '.title // ""' | tr -d '\n' | head -c 200)
+      MR_URL=$(echo "$MR_JSON" | jq -r '.web_url // ""')
+      AUTHOR=$(echo "$MR_JSON" | jq -r '.author.username // ""')
+      DESCRIPTION=$(echo "$MR_JSON" | jq -r '.description // ""')
+
+      [ -z "$SOURCE_BRANCH" ] && { echo "ERROR: MR #$MR_IID has no source_branch" >&2; exit 1; }
+
+      # Extract MANTIS bug id from MR description. fortinet-mantis-bug-fix
+      # writes "## Mantis:\nMANTIS-1298572" but be tolerant of variations.
+      BUG_ID=$(echo "$DESCRIPTION" | grep -oE 'MANTIS-[0-9]+' | head -1 | sed 's/^MANTIS-//')
+      [ -z "$BUG_ID" ] && BUG_ID=$(echo "$SOURCE_BRANCH" | grep -oE 'mantis-[0-9]+' | head -1 | sed 's/^mantis-//')
+
+      if [ -z "$BUG_ID" ]; then
+        echo "ERROR: no MANTIS-<id> found in MR #$MR_IID description or source_branch '$SOURCE_BRANCH'." >&2
+        echo "       Cannot resolve which Mantis bug carries the automation test path." >&2
+        exit 1
+      fi
+
+      echo "HOST=$HOST"
+      echo "PROJECT_PATH=$PROJECT_PATH"
+      echo "MR_IID=$MR_IID"
+      echo "MR_URL=$MR_URL"
+      echo "MR_TITLE=$MR_TITLE"
+      echo "SOURCE_BRANCH=$SOURCE_BRANCH"
+      echo "TARGET_BRANCH=$TARGET_BRANCH"
+      echo "AUTHOR=$AUTHOR"
+      echo "BUG_ID=$BUG_ID"
+    outputs:
+      - name: info
+        extract: stdout
+
+  # ────────────────────────────────────────────────────────────────
+  # fetch-mantis — pull the bug, extract "Automation Test Case:" path
+  # ────────────────────────────────────────────────────────────────
+  fetch-mantis:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - resolve
+    prompt: |
+      set -e
+
+      INFO=$'{{nodes.resolve.outputs.info}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
+
+      [ -z "$BUG_ID" ] && { echo "ERROR: BUG_ID empty from resolve outputs" >&2; exit 1; }
+
+      PAYLOAD="{\"plugin_id\":\"mantis\",\"tool\":\"get_bug\",\"input\":{\"bug_id\":$BUG_ID}}"
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD")
+
+      IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
+      if [ "$IS_ERR" = "true" ]; then
+        ERRMSG=$(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)
+        echo "ERROR: mantis.get_bug($BUG_ID) failed: $ERRMSG" >&2
+        exit 1
+      fi
+
+      BUG=$(echo "$RESP" | jq -r '.content')
+      DESC=$(echo "$BUG" | jq -r '.description // ""')
+
+      # Find "Automation Test Case:" then take the FIRST non-empty line
+      # after it. Tolerant of trailing whitespace / blank lines.
+      TEST_PATH=$(echo "$DESC" | awk '
+        /^[[:space:]]*Automation[[:space:]]+Test[[:space:]]+Case[[:space:]]*:[[:space:]]*$/ { found=1; next }
+        found && /^[[:space:]]*$/ { next }
+        found { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit }
+      ')
+
+      # Fallback: same-line form "Automation Test Case: <path>"
+      if [ -z "$TEST_PATH" ]; then
+        TEST_PATH=$(echo "$DESC" | sed -nE 's/^[[:space:]]*Automation[[:space:]]+Test[[:space:]]+Case[[:space:]]*:[[:space:]]+(.+)$/\1/p' | head -1 | tr -d '\r' | sed 's/[[:space:]]*$//')
+      fi
+
+      if [ -z "$TEST_PATH" ]; then
+        echo "ERROR: Mantis bug $BUG_ID has no 'Automation Test Case:' section in description." >&2
+        echo "       Cannot run automation test for MR #$MR_IID." >&2
+        exit 1
+      fi
+
+      # TP v2 API joins onto /root/fnac_auto/tests itself. Strip a leading
+      # `/tests/` or `tests/` prefix if the bug includes it; leading `/`
+      # is OK either way.
+      TEST_PATH=$(echo "$TEST_PATH" | sed -E 's#^/?tests/##')
+
+      BUG_SUMMARY=$(echo "$BUG" | jq -r '.summary // ""' | tr -d '\n' | head -c 200)
+
+      echo "BUG_ID=$BUG_ID"
+      echo "BUG_SUMMARY=$BUG_SUMMARY"
+      echo "TEST_PATH=$TEST_PATH"
+    outputs:
+      - name: details
+        extract: stdout
+
+  # ────────────────────────────────────────────────────────────────
+  # jenkins-build — trigger a build for source_branch, poll, list
+  # artifacts, derive IMAGE_PATH for nac.upgrade
+  # ────────────────────────────────────────────────────────────────
+  jenkins-build:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - resolve
+    prompt: |
+      set -e
+
+      INFO=$'{{nodes.resolve.outputs.info}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$INFO"
+
+      INSTANCE=$'{{input.jenkins_instance}}'
+      JOB=$'{{input.jenkins_job}}'
+      BRANCH_PARAM=$'{{input.jenkins_branch_param}}'
+      TIMEOUT='{{input.jenkins_build_timeout_sec}}'
+      TIMEOUT=${TIMEOUT:-3600}
+
+      [ -z "$INSTANCE" ] && { echo "ERROR: jenkins_instance required" >&2; exit 1; }
+      [ -z "$JOB" ]      && { echo "ERROR: jenkins_job required" >&2; exit 1; }
+      [ -z "$SOURCE_BRANCH" ] && { echo "ERROR: SOURCE_BRANCH empty from resolve" >&2; exit 1; }
+
+      call_jenkins() {
+        local TOOL="$1" ARGS="$2"
+        local PAYLOAD="{\"plugin_id\":\"jenkins\",\"tool\":\"$TOOL\",\"input\":$ARGS}"
+        local RESP
+        RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+          -H 'content-type: application/json' --data "$PAYLOAD")
+        local IS_ERR
+        IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
+        if [ "$IS_ERR" = "true" ]; then
+          echo "ERROR: jenkins.$TOOL failed: $(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)" >&2
+          return 1
+        fi
+        echo "$RESP" | jq -r '.content'
+      }
+
+      # 1) Trigger build with the single branch parameter.
+      PARAMS=$(jq -nc --arg k "$BRANCH_PARAM" --arg v "$SOURCE_BRANCH" '{($k): $v}')
+      TRIG_ARGS=$(jq -nc --arg i "$INSTANCE" --arg j "$JOB" --argjson p "$PARAMS" \
+        '{instance: $i, job_path: $j, params: $p}')
+      echo "→ jenkins.trigger_build job=$JOB params=$PARAMS" >&2
+      TRIG=$(call_jenkins trigger_build "$TRIG_ARGS") || exit 1
+      QUEUE_URL=$(echo "$TRIG" | jq -r '.queueUrl // .location // ""')
+      QUEUE_ID=$(echo "$QUEUE_URL" | grep -oE 'queue/item/[0-9]+' | grep -oE '[0-9]+' | head -1)
+      if [ -z "$QUEUE_ID" ]; then
+        QUEUE_ID=$(echo "$TRIG" | jq -r '.queueItem // empty' | grep -oE '[0-9]+' | head -1)
+      fi
+      [ -z "$QUEUE_ID" ] && { echo "ERROR: could not extract queue id from trigger response: $TRIG" >&2; exit 1; }
+      echo "   queue id: $QUEUE_ID" >&2
+
+      # 2) Poll queue item until it has an executable (build assigned).
+      START=$(date +%s); BUILD_NUMBER=""
+      while :; do
+        ELAPSED=$(( $(date +%s) - START ))
+        [ "$ELAPSED" -gt "$TIMEOUT" ] && { echo "ERROR: queue wait exceeded ${TIMEOUT}s" >&2; exit 1; }
+        QI_ARGS=$(jq -nc --arg i "$INSTANCE" --arg q "$QUEUE_ID" '{instance: $i, queue_item_id: $q}')
+        QI=$(call_jenkins get_queue_item "$QI_ARGS" 2>/dev/null || true)
+        BUILD_NUMBER=$(echo "$QI" | jq -r '.executable.number // empty')
+        if [ -n "$BUILD_NUMBER" ]; then
+          echo "   queue → build #$BUILD_NUMBER (after ${ELAPSED}s)" >&2
+          break
+        fi
+        BLOCKED=$(echo "$QI" | jq -r '.why // empty')
+        [ -n "$BLOCKED" ] && echo "   queued: $BLOCKED" >&2
+        sleep 15
+      done
+
+      # 3) Poll get_build until building=false.
+      while :; do
+        ELAPSED=$(( $(date +%s) - START ))
+        [ "$ELAPSED" -gt "$TIMEOUT" ] && { echo "ERROR: build wait exceeded ${TIMEOUT}s (build #$BUILD_NUMBER)" >&2; exit 1; }
+        B_ARGS=$(jq -nc --arg i "$INSTANCE" --arg j "$JOB" --argjson n "$BUILD_NUMBER" '{instance: $i, job_path: $j, build_number: $n}')
+        B=$(call_jenkins get_build "$B_ARGS") || exit 1
+        BUILDING=$(echo "$B" | jq -r '.building // false')
+        RESULT=$(echo "$B" | jq -r '.result // ""')
+        if [ "$BUILDING" = "false" ]; then
+          echo "   build #$BUILD_NUMBER finished after ${ELAPSED}s: result=$RESULT" >&2
+          if [ "$RESULT" != "SUCCESS" ]; then
+            echo "ERROR: Jenkins build #$BUILD_NUMBER did not SUCCEED (result=$RESULT)." >&2
+            exit 1
+          fi
+          break
+        fi
+        sleep 30
+      done
+
+      # 4) List artifacts; find the .out image.
+      LA_ARGS=$(jq -nc --arg i "$INSTANCE" --arg j "$JOB" --argjson n "$BUILD_NUMBER" '{instance: $i, job_path: $j, build_number: $n}')
+      LA=$(call_jenkins list_artifacts "$LA_ARGS") || exit 1
+      OUT_REL=$(echo "$LA" | jq -r '.artifacts[]?.relativePath' | grep -E '\.out$' | head -1)
+      if [ -z "$OUT_REL" ]; then
+        echo "ERROR: no .out artifact found in build #$BUILD_NUMBER. Artifacts list:" >&2
+        echo "$LA" | jq -r '.artifacts[]?.relativePath' | head -10 >&2
+        exit 1
+      fi
+
+      # Derive image build number from the .out filename, e.g.
+      # nacos/FNAC_ESX-v7-build6957-FORTINET_job1_17.out → 6957
+      NAC_BUILD=$(echo "$OUT_REL" | grep -oE 'build[0-9]+' | head -1 | sed 's/^build//')
+
+      # SCP source path on the Jenkins host. Default Jenkins workspace
+      # layout: /var/lib/jenkins/jobs/<job_path>/builds/<N>/archive/<relPath>.
+      # job_path may include /job/sub-job/ syntax; the artifact list's
+      # relativePath is anchored under archive/. Build the absolute path
+      # by concatenating.
+      IMAGE_PATH="/var/lib/jenkins/jobs/${JOB}/builds/${BUILD_NUMBER}/archive/${OUT_REL}"
+
+      echo "JENKINS_INSTANCE=$INSTANCE"
+      echo "JENKINS_JOB=$JOB"
+      echo "BUILD_NUMBER=$BUILD_NUMBER"
+      echo "NAC_BUILD=$NAC_BUILD"
+      echo "IMAGE_PATH=$IMAGE_PATH"
+    outputs:
+      - name: build
+        extract: stdout
+
+  # ────────────────────────────────────────────────────────────────
+  # tp-lab-devices — get NAC IP for the lab
+  # ────────────────────────────────────────────────────────────────
+  tp-lab-devices:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - resolve
+    prompt: |
+      set -e
+
+      LAB=$'{{input.tp_lab}}'
+      [ -z "$LAB" ] && { echo "ERROR: tp_lab required" >&2; exit 1; }
+
+      PAYLOAD=$(jq -nc --arg lab "$LAB" '{plugin_id:"tp",tool:"get_lab_devices",input:{lab:$lab}}')
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD")
+
+      IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
+      if [ "$IS_ERR" = "true" ]; then
+        echo "ERROR: tp.get_lab_devices($LAB) failed: $(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)" >&2
+        exit 1
+      fi
+
+      BODY=$(echo "$RESP" | jq -r '.content')
+      NAC_IP=$(echo "$BODY" | jq -r '.nac_devices[0]?.ip // empty')
+      if [ -z "$NAC_IP" ] || [ "$NAC_IP" = "null" ]; then
+        echo "ERROR: lab '$LAB' has no NAC device with an IP." >&2
+        echo "       Body: $(echo "$BODY" | jq -c '. | {lab, status, nac_devices}')" >&2
+        exit 1
+      fi
+
+      echo "TP_LAB=$LAB"
+      echo "NAC_IP=$NAC_IP"
+    outputs:
+      - name: lab
+        extract: stdout
+
+  # ────────────────────────────────────────────────────────────────
+  # nac-upgrade — restore image over SCP, poll get_version until the
+  # running build matches NAC_BUILD (or timeout)
+  # ────────────────────────────────────────────────────────────────
+  nac-upgrade:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - jenkins-build
+      - tp-lab-devices
+    prompt: |
+      set -e
+
+      B=$'{{nodes.jenkins-build.outputs.build}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$B"
+      L=$'{{nodes.tp-lab-devices.outputs.lab}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$L"
+
+      TIMEOUT='{{input.nac_upgrade_timeout_sec}}'
+      TIMEOUT=${TIMEOUT:-1200}
+
+      [ -z "$NAC_IP" ]     && { echo "ERROR: NAC_IP empty from tp-lab-devices" >&2; exit 1; }
+      [ -z "$IMAGE_PATH" ] && { echo "ERROR: IMAGE_PATH empty from jenkins-build" >&2; exit 1; }
+      [ -z "$NAC_BUILD" ]  && { echo "ERROR: NAC_BUILD empty from jenkins-build" >&2; exit 1; }
+
+      # Kick the upgrade. nac.upgrade has its own `async` watch but we
+      # explicitly poll get_version here because the pipeline node needs
+      # to BLOCK until the new build is running before tp-test fires.
+      UP_ARGS=$(jq -nc --arg h "$NAC_IP" --arg ip "$IMAGE_PATH" '{host: $h, image_path: $ip}')
+      echo "→ nac.upgrade host=$NAC_IP image=$IMAGE_PATH (target build=$NAC_BUILD)" >&2
+
+      UP_RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' \
+        --data "{\"plugin_id\":\"nac\",\"tool\":\"upgrade\",\"input\":$UP_ARGS}")
+      IS_ERR=$(echo "$UP_RESP" | jq -r '.is_error // false')
+      if [ "$IS_ERR" = "true" ]; then
+        echo "ERROR: nac.upgrade failed: $(echo "$UP_RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)" >&2
+        exit 1
+      fi
+
+      UP_BODY=$(echo "$UP_RESP" | jq -r '.content')
+      REBOOTED=$(echo "$UP_BODY" | jq -r '.captured.rebooted // empty')
+      if [ -z "$REBOOTED" ]; then
+        # FortiNAC restore didn't auto-reboot — fire nac.reboot.
+        echo "   image written but NAC did not auto-reboot; calling nac.reboot" >&2
+        RB_ARGS=$(jq -nc --arg h "$NAC_IP" '{host: $h}')
+        RB=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+          -H 'content-type: application/json' \
+          --data "{\"plugin_id\":\"nac\",\"tool\":\"reboot\",\"input\":$RB_ARGS}")
+        IS_RB_ERR=$(echo "$RB" | jq -r '.is_error // false')
+        [ "$IS_RB_ERR" = "true" ] && echo "WARN: nac.reboot returned error: $(echo "$RB" | jq -r '.content' | head -c 300)" >&2
+      fi
+
+      # Poll get_version until the running build matches NAC_BUILD.
+      START=$(date +%s)
+      GV_ARGS=$(jq -nc --arg h "$NAC_IP" '{host: $h}')
+      while :; do
+        ELAPSED=$(( $(date +%s) - START ))
+        [ "$ELAPSED" -gt "$TIMEOUT" ] && {
+          echo "ERROR: NAC $NAC_IP did not reach build $NAC_BUILD within ${TIMEOUT}s." >&2
+          exit 1
+        }
+        GV=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+          -H 'content-type: application/json' \
+          --data "{\"plugin_id\":\"nac\",\"tool\":\"get_version\",\"input\":$GV_ARGS}" 2>/dev/null || true)
+        GV_ERR=$(echo "$GV" | jq -r '.is_error // false')
+        if [ "$GV_ERR" = "true" ]; then
+          # Expected during reboot — keep waiting.
+          echo "   [${ELAPSED}s] NAC unreachable (rebooting?)" >&2
+        else
+          CUR_BUILD=$(echo "$GV" | jq -r '.content | .captured.build // empty')
+          echo "   [${ELAPSED}s] current build=$CUR_BUILD (target=$NAC_BUILD)" >&2
+          if [ "$CUR_BUILD" = "$NAC_BUILD" ]; then
+            echo "NAC $NAC_IP now on build $NAC_BUILD (took ${ELAPSED}s)" >&2
+            break
+          fi
+        fi
+        sleep 30
+      done
+
+      echo "NAC_IP=$NAC_IP"
+      echo "NAC_BUILD=$NAC_BUILD"
+      echo "UPGRADE_ELAPSED_SEC=$ELAPSED"
+    outputs:
+      - name: upgrade
+        extract: stdout
+
+  # ────────────────────────────────────────────────────────────────
+  # tp-test — kick off pytest with the testcase from mantis, poll
+  # tp.get_test_execution until terminal (Done|Failed|Cancelled)
+  # ────────────────────────────────────────────────────────────────
+  tp-test:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - fetch-mantis
+      - nac-upgrade
+    prompt: |
+      set -e
+
+      D=$'{{nodes.fetch-mantis.outputs.details}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$D"
+
+      LAB=$'{{input.tp_lab}}'
+      TIMEOUT='{{input.test_timeout_sec}}'
+      TIMEOUT=${TIMEOUT:-7200}
+
+      [ -z "$TEST_PATH" ] && { echo "ERROR: TEST_PATH empty from fetch-mantis" >&2; exit 1; }
+      [ -z "$LAB" ]       && { echo "ERROR: tp_lab required" >&2; exit 1; }
+
+      RUN_ARGS=$(jq -nc --arg lab "$LAB" --arg t "$TEST_PATH" \
+        '{lab: $lab, testcase: [$t], argument: "-vv --tb=short"}')
+      echo "→ tp.run_pytest lab=$LAB testcase=$TEST_PATH" >&2
+
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' \
+        --data "{\"plugin_id\":\"tp\",\"tool\":\"run_pytest\",\"input\":$RUN_ARGS}")
+      IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
+      if [ "$IS_ERR" = "true" ]; then
+        echo "ERROR: tp.run_pytest failed: $(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)" >&2
+        exit 1
+      fi
+
+      BODY=$(echo "$RESP" | jq -r '.content')
+      EXEC_ID=$(echo "$BODY" | jq -r '.exec_id // empty')
+      if [ -z "$EXEC_ID" ] || [ "$EXEC_ID" = "null" ]; then
+        echo "ERROR: tp.run_pytest returned no exec_id. Body: $BODY" >&2
+        exit 1
+      fi
+      echo "   exec_id=$EXEC_ID" >&2
+
+      # Poll get_test_execution until terminal status.
+      START=$(date +%s)
+      while :; do
+        ELAPSED=$(( $(date +%s) - START ))
+        [ "$ELAPSED" -gt "$TIMEOUT" ] && {
+          echo "ERROR: TP exec #$EXEC_ID did not reach terminal status within ${TIMEOUT}s." >&2
+          exit 1
+        }
+        GE=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+          -H 'content-type: application/json' \
+          --data "{\"plugin_id\":\"tp\",\"tool\":\"get_test_execution\",\"input\":{\"id\":$EXEC_ID}}")
+        GE_ERR=$(echo "$GE" | jq -r '.is_error // false')
+        if [ "$GE_ERR" = "true" ]; then
+          echo "   [${ELAPSED}s] get_test_execution error: $(echo "$GE" | jq -r '.content' | head -c 200)" >&2
+          sleep 30
+          continue
+        fi
+        E=$(echo "$GE" | jq -r '.content')
+        STATUS=$(echo "$E" | jq -r '.status // ""')
+        PASS=$(echo "$E"   | jq -r '.pass_count   // 0')
+        FAIL=$(echo "$E"   | jq -r '.fail_count   // 0')
+        ERR_C=$(echo "$E"  | jq -r '.error_count  // 0')
+        SKIP=$(echo "$E"   | jq -r '.skip_count   // 0')
+        TOTAL=$(echo "$E"  | jq -r '.total_count  // 0')
+        REPORT=$(echo "$E" | jq -r '.report_url // .report_file_path // ""')
+        echo "   [${ELAPSED}s] status=$STATUS  P$PASS/F$FAIL/E$ERR_C/S$SKIP of $TOTAL" >&2
+        case "$STATUS" in
+          Done|Failed|Cancelled) break ;;
+          Initiating|Running) sleep 30 ;;
+          *)
+            echo "WARN: unknown TP status '$STATUS'; treating as terminal" >&2
+            break
+            ;;
+        esac
+      done
+
+      # Classify final result for the post-to-mr node.
+      FINAL="pass"
+      if [ "$STATUS" != "Done" ]; then
+        FINAL="fail"
+      elif [ "$FAIL" -gt 0 ] || [ "$ERR_C" -gt 0 ]; then
+        FINAL="fail"
+      fi
+
+      echo "EXEC_ID=$EXEC_ID"
+      echo "STATUS=$STATUS"
+      echo "PASS=$PASS"
+      echo "FAIL=$FAIL"
+      echo "SKIP=$SKIP"
+      echo "ERR_C=$ERR_C"
+      echo "TOTAL=$TOTAL"
+      echo "REPORT_URL=$REPORT"
+      echo "FINAL=$FINAL"
+      echo "TESTCASE=$TEST_PATH"
+    outputs:
+      - name: result
+        extract: stdout
+
+  # ────────────────────────────────────────────────────────────────
+  # post-to-mr — comment on the MR, swap stage label
+  # ────────────────────────────────────────────────────────────────
+  post-to-mr:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - tp-test
+    prompt: |
+      set -e
+
+      I=$'{{nodes.resolve.outputs.info}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$I"
+      R=$'{{nodes.tp-test.outputs.result}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$R"
+      U=$'{{nodes.nac-upgrade.outputs.upgrade}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$U"
+
+      LBL_STAGE=$'{{input.label_stage}}'
+      LBL_PASS=$'{{input.label_pass}}'
+      LBL_FAIL=$'{{input.label_fail}}'
+      TPL=$'{{input.comment_template}}'
+
+      [ -z "$MR_IID" ]      && { echo "ERROR: MR_IID missing" >&2; exit 1; }
+      [ -z "$PROJECT_PATH" ] && { echo "ERROR: PROJECT_PATH missing" >&2; exit 1; }
+
+      PID_ENC=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "$PROJECT_PATH")
+
+      # Render comment.
+      COMMENT=$(python3 - "$TPL" "$STATUS" "$PASS" "$FAIL" "$SKIP" "$ERR_C" "$TOTAL" "$REPORT_URL" "$EXEC_ID" "$NAC_IP" "$NAC_BUILD" "$TESTCASE" <<'PY'
+      import sys
+      tpl,status,p,f,s,e,total,report,exec_id,nac_ip,img_build,testcase = sys.argv[1:13]
+      print(tpl
+        .replace('{status}', status)
+        .replace('{pass}',  p)
+        .replace('{fail}',  f)
+        .replace('{skip}',  s)
+        .replace('{error}', e)
+        .replace('{total}', total)
+        .replace('{report_url}', report or '(no report)')
+        .replace('{exec_id}', exec_id)
+        .replace('{nac_ip}', nac_ip)
+        .replace('{image_build}', img_build)
+        .replace('{testcase}', testcase))
+      PY
+      )
+
+      # Post comment.
+      NOTE_PAYLOAD=$(jq -nc --arg b "$COMMENT" '{body: $b}')
+      NOTE_RESP=$(glab api "projects/${PID_ENC}/merge_requests/${MR_IID}/notes" -X POST \
+        --input - <<<"$NOTE_PAYLOAD" 2>&1) || {
+        echo "WARN: glab post-note failed:" >&2
+        echo "$NOTE_RESP" | head -20 >&2
+      }
+
+      # Decide labels.
+      if [ "$FINAL" = "pass" ]; then
+        ADD_LABEL="$LBL_PASS"
+      else
+        ADD_LABEL="$LBL_FAIL"
+      fi
+      # Mutually exclusive: remove the OTHER + the original stage label.
+      REMOVE_LIST=""
+      [ -n "$LBL_STAGE" ] && REMOVE_LIST="$LBL_STAGE"
+      OTHER=""
+      if [ "$FINAL" = "pass" ]; then OTHER="$LBL_FAIL"; else OTHER="$LBL_PASS"; fi
+      [ -n "$OTHER" ] && REMOVE_LIST="${REMOVE_LIST:+$REMOVE_LIST,}$OTHER"
+
+      if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
+           -f "add_labels=$ADD_LABEL" \
+           -f "remove_labels=$REMOVE_LIST" \
+           > /dev/null 2>&1; then
+        echo "Posted comment + labels: +$ADD_LABEL -$REMOVE_LIST" >&2
+      else
+        echo "WARN: failed to swap labels (+$ADD_LABEL / -$REMOVE_LIST) — project may lack one of them." >&2
+      fi
+
+      echo "MR_IID=$MR_IID"
+      echo "FINAL=$FINAL"
+      echo "ADDED_LABEL=$ADD_LABEL"
+      echo "REMOVED_LABELS=$REMOVE_LIST"
+    outputs:
+      - name: posted
+        extract: stdout
