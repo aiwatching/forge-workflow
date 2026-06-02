@@ -45,6 +45,9 @@ description: |
 
     Phase F — Reporting
       post-to-mr           — glab note + label swap
+      post-to-mantis       — mantis.add_comment bugnote (best-effort,
+                             gated by input.post_to_mantis, never
+                             fails the iteration)
 
   Why serial: NAC + lab are shared hardware. Two MRs upgrading the
   same NAC in parallel would race. on_failure=continue so one bad MR
@@ -61,7 +64,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.6.2"
+version: "0.6.3"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -238,6 +241,30 @@ input:
       - Report: {report_url}
 
       ref: mr-test-{exec_id}
+
+  post_to_mantis:
+    description: "Also write a bugnote to the linked Mantis bug (BUG_ID resolved from MR description / source branch). Set false to skip. Failures here only WARN — they do not fail the pipeline."
+    type: boolean
+    required: false
+    default: true
+    label: "Also post to Mantis"
+
+  mantis_comment_template:
+    description: "Mantis bugnote template. Same placeholders as comment_template, plus {mr_url} and {mr_iid}."
+    type: string
+    required: false
+    multiline: true
+    label: "Mantis bugnote template"
+    default: |
+      Forge automation test result — {status}
+
+      Counts: pass {pass} / fail {fail} / error {error} / skip {skip} / total {total}
+
+      - Testcase: {testcase}
+      - NAC: {nac_ip} (upgraded to build {image_build})
+      - TP exec id: #{exec_id}
+      - Report: {report_url}
+      - MR: !{mr_iid} ({mr_url})
 
 nodes:
   # ════════════════════════════════════════════════════════════════
@@ -1077,4 +1104,81 @@ nodes:
       echo "REMOVED_LABELS=$REMOVE_LIST"
     outputs:
       - name: posted
+        extract: stdout
+
+  # post-to-mantis — bugnote on the linked Mantis bug. Best-effort:
+  # warns on failure, never fails the iteration (the MR is the source
+  # of truth for the test result; mantis is a courtesy copy).
+  post-to-mantis:
+    worktree: false
+    project: "{{input.project}}"
+    mode: shell
+    depends_on:
+      - post-to-mr
+    prompt: |
+      set -e
+      ENABLE=$'{{input.post_to_mantis}}'
+      if [ "$ENABLE" = "false" ] || [ "$ENABLE" = "0" ] || [ "$ENABLE" = "no" ]; then
+        echo "post_to_mantis disabled — skip."
+        echo "SKIPPED=true"
+        exit 0
+      fi
+
+      I=$'{{nodes.resolve.outputs.info}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$I"
+      W=$'{{nodes.tp-wait-result.outputs.result}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$W"
+      U=$'{{nodes.nac-upgrade-kick.outputs.upgrade}}'
+      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$U"
+
+      if [ -z "$BUG_ID" ]; then
+        echo "WARN: BUG_ID not resolved from MR — skip Mantis post." >&2
+        echo "SKIPPED=true"
+        echo "REASON=no_bug_id"
+        exit 0
+      fi
+
+      TPL=$'{{input.mantis_comment_template}}'
+      COMMENT=$(python3 - "$TPL" "$STATUS" "$PASS" "$FAIL" "$SKIP" "$ERR_C" "$TOTAL" "$REPORT_URL" "$EXEC_ID" "$NAC_IP" "$TARGET_BUILD" "$TESTCASE" "$MR_URL" "$MR_IID" <<'PY'
+      import sys
+      tpl,status,p,f,s,e,total,report,exec_id,nac_ip,img_build,testcase,mr_url,mr_iid = sys.argv[1:15]
+      print(tpl
+        .replace('{status}', status)
+        .replace('{pass}',  p)
+        .replace('{fail}',  f)
+        .replace('{skip}',  s)
+        .replace('{error}', e)
+        .replace('{total}', total)
+        .replace('{report_url}', report or '(no report)')
+        .replace('{exec_id}', exec_id)
+        .replace('{nac_ip}', nac_ip)
+        .replace('{image_build}', img_build)
+        .replace('{testcase}', testcase)
+        .replace('{mr_url}', mr_url or '')
+        .replace('{mr_iid}', mr_iid or ''))
+      PY
+      )
+
+      ARGS=$(jq -nc --argjson id "$BUG_ID" --arg t "$COMMENT" '{bug_id: $id, text: $t}')
+      PAYLOAD=$(jq -nc --argjson a "$ARGS" '{plugin_id: "mantis", tool: "add_comment", input: $a}')
+
+      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' --data "$PAYLOAD")
+
+      IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
+      BODY=$(echo "$RESP" | jq -c '.content | split("\n\n[watch")[0] | fromjson' 2>/dev/null || echo "{}")
+      OK=$(echo "$BODY" | jq -r '.success // .ok // false')
+
+      if [ "$IS_ERR" = "true" ] || [ "$OK" != "true" ]; then
+        echo "WARN: mantis.add_comment($BUG_ID) failed: $(echo "$RESP" | jq -r '.content // .error // ""' | head -c 400)" >&2
+        echo "BUG_ID=$BUG_ID"
+        echo "POSTED=false"
+        exit 0
+      fi
+
+      echo "Posted bugnote to Mantis bug #$BUG_ID" >&2
+      echo "BUG_ID=$BUG_ID"
+      echo "POSTED=true"
+    outputs:
+      - name: mantis_post
         extract: stdout
