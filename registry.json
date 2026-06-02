@@ -156,7 +156,7 @@
       "name": "fortinet-mr-automation-review",
       "display_name": "Fortinet \u00b7 MR Automation Review",
       "description": "Find GitLab MRs labelled (e.g.) forge:stage::needs_review AND forge:keyword::automation_test \u2192 for each: build via Jenkins, upgrade a NAC in a TP lab to the new build, run the pytest case linked from the bug's Mantis description, post results back to the MR and flip the stage label to tested_passed / tested_failed. v0.2: 15-node fine-grained DAG (v0.3.0: renamed from fortinet-mr-test) with a route-platform extension hook (TP-only today).",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "author": "forge",
       "tags": [
         "fortinet",

@@ -14,7 +14,7 @@ description: |
   Setup (runs ONCE before the loop):
     discover-mrs           — glab → MR iids (filter mode OR explicit)
 
-  Per-MR (14 nodes):
+  Per-MR (13 nodes):
     Phase A — Context
       resolve              — glab → SOURCE_BRANCH, MANTIS-<id>
       fetch-mantis         — mantis.get_bug → TEST_PATH
@@ -26,9 +26,10 @@ description: |
                              them with __SKIP__ here.
 
     Phase C — Jenkins build (common to all platforms)
-      jenkins-trigger      — jenkins.trigger_build → QUEUE_ID
-      jenkins-wait-queue   — poll queue → BUILD_NUMBER
-      jenkins-wait-build   — poll get_build → SUCCESS or fail
+      jenkins-trigger      — get_next_build_number (reserve N), then
+                             trigger_build with branch param → BUILD_NUMBER
+      jenkins-wait-build   — poll get_build(N), tolerating 404 while
+                             queued, until building=false → SUCCESS or fail
       jenkins-fetch-artifact — list_artifacts → IMAGE_PATH, NAC_BUILD
 
     Phase D — NAC upgrade (TP-specific; rename `tp-`/`nac-` for other
@@ -60,7 +61,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.3.1"
+version: "0.4.0"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -392,7 +393,15 @@ nodes:
   # PHASE C — Jenkins build (common to all platforms)
   # ════════════════════════════════════════════════════════════════
 
-  # jenkins-trigger — fire the build, return queue id only.
+  # jenkins-trigger — reserve next build number, then fire the build.
+  # Note: Jenkins's trigger_build returns 201 + `Location:` header + empty
+  # body, but Forge's http connector does NOT expose response headers
+  # (lib/chat/protocols/http.ts:349-352). So we can't get queue_id from
+  # the trigger response. Workaround: read `nextBuildNumber` from the job
+  # FIRST (that's the number Jenkins will assign to the next trigger),
+  # then trigger, then downstream nodes poll get_build(N) directly.
+  # Small race risk if two triggers race on the same job within the same
+  # ms — fine for serial for_each + manual fire.
   jenkins-trigger:
     worktree: false
     project: "{{input.project}}"
@@ -413,50 +422,73 @@ nodes:
 
       # Normalize jenkins_job → URL form `job/<X>` (or `job/<X>/job/<Y>` for
       # nested). Jenkins URLs always use the `job/` prefix; without it the
-      # endpoint returns 404 (e.g. trigger_build POSTs to
-      # <base>/job/<name>/buildWithParameters). User may type either form:
+      # endpoint returns 404. User may type either form:
       #   "fortinac-build-7.6-token"            → "job/fortinac-build-7.6-token"
       #   "team-x/deploy-app"                   → "job/team-x/job/deploy-app"
       #   "job/fortinac-build-7.6-token"        → verbatim
-      #   "view/<v>/job/<x>" or any `job/` form → verbatim
       JOB_TRIM=$(echo "$JOB_RAW" | sed 's#^/##; s#/$##')
       if echo "$JOB_TRIM" | grep -qE '(^|/)(job|view)/'; then
         JOB="$JOB_TRIM"
       else
-        # split on / and prefix each segment with job/
         JOB=$(echo "$JOB_TRIM" | awk -F/ '{ for(i=1;i<=NF;i++) printf "%sjob/%s", (i>1?"/":""), $i }')
       fi
       echo "→ normalized jenkins_job: '$JOB_RAW' → '$JOB'" >&2
 
-      PARAMS=$(jq -nc --arg k "$BRANCH_PARAM" --arg v "$SOURCE_BRANCH" '{($k): $v}')
-      ARGS=$(jq -nc --arg i "$INSTANCE" --arg j "$JOB" --argjson p "$PARAMS" \
-        '{instance: $i, job_path: $j, params: $p}')
-      echo "→ jenkins.trigger_build job=$JOB branch=$SOURCE_BRANCH" >&2
+      # Helper: strip Forge http connector's preamble + truncation notice.
+      # `.content` is "HTTP <N> <text> · <METHOD> <url>\n[notice\n]\n<body>"
+      # — body starts AFTER the first blank line.
+      body_only() { sed '1,/^$/d'; }
 
-      RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+      # Step 1: reserve next build number.
+      NBN_ARGS=$(jq -nc --arg i "$INSTANCE" --arg j "$JOB" '{instance: $i, job_path: $j}')
+      NBN_RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
         -H 'content-type: application/json' \
-        --data "{\"plugin_id\":\"jenkins\",\"tool\":\"trigger_build\",\"input\":$ARGS}")
-      IS_ERR=$(echo "$RESP" | jq -r '.is_error // false')
-      if [ "$IS_ERR" = "true" ]; then
-        echo "ERROR: jenkins.trigger_build failed: $(echo "$RESP" | jq -r '.content // .error // "(unknown)"' | head -c 400)" >&2
+        --data "{\"plugin_id\":\"jenkins\",\"tool\":\"get_next_build_number\",\"input\":$NBN_ARGS}")
+      NBN_ERR=$(echo "$NBN_RESP" | jq -r '.is_error // false')
+      if [ "$NBN_ERR" = "true" ]; then
+        echo "ERROR: jenkins.get_next_build_number failed:" >&2
+        echo "$NBN_RESP" | jq -r '.content' | head -c 400 >&2
+        echo "" >&2
         exit 1
       fi
-      BODY=$(echo "$RESP" | jq -r '.content')
-      QUEUE_URL=$(echo "$BODY" | jq -r '.queueUrl // .location // ""')
-      QUEUE_ID=$(echo "$QUEUE_URL" | grep -oE 'queue/item/[0-9]+' | grep -oE '[0-9]+' | head -1)
-      [ -z "$QUEUE_ID" ] && QUEUE_ID=$(echo "$BODY" | jq -r '.queueItem // empty' | grep -oE '[0-9]+' | head -1)
-      [ -z "$QUEUE_ID" ] && { echo "ERROR: no queue id in trigger response: $BODY" >&2; exit 1; }
+      NBN_BODY=$(echo "$NBN_RESP" | jq -r '.content' | body_only)
+      BUILD_NUMBER=$(echo "$NBN_BODY" | jq -r '.nextBuildNumber // empty')
+      if [ -z "$BUILD_NUMBER" ] || [ "$BUILD_NUMBER" = "null" ]; then
+        echo "ERROR: could not parse nextBuildNumber. body:" >&2
+        echo "$NBN_BODY" | head -c 400 >&2
+        echo "" >&2
+        exit 1
+      fi
+      echo "→ reserved build #$BUILD_NUMBER for branch=$SOURCE_BRANCH" >&2
+
+      # Step 2: trigger the build. Don't try to parse the response body
+      # (Jenkins returns empty + Location header which Forge strips).
+      PARAMS=$(jq -nc --arg k "$BRANCH_PARAM" --arg v "$SOURCE_BRANCH" '{($k): $v}')
+      TRIG_ARGS=$(jq -nc --arg i "$INSTANCE" --arg j "$JOB" --argjson p "$PARAMS" \
+        '{instance: $i, job_path: $j, params: $p}')
+      TRIG_RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
+        -H 'content-type: application/json' \
+        --data "{\"plugin_id\":\"jenkins\",\"tool\":\"trigger_build\",\"input\":$TRIG_ARGS}")
+      TRIG_ERR=$(echo "$TRIG_RESP" | jq -r '.is_error // false')
+      if [ "$TRIG_ERR" = "true" ]; then
+        echo "ERROR: jenkins.trigger_build failed:" >&2
+        echo "$TRIG_RESP" | jq -r '.content' | head -c 400 >&2
+        echo "" >&2
+        exit 1
+      fi
+      echo "→ triggered (build #$BUILD_NUMBER pending in queue / executing)" >&2
 
       echo "JENKINS_INSTANCE=$INSTANCE"
       echo "JENKINS_JOB=$JOB"
-      echo "QUEUE_ID=$QUEUE_ID"
-      echo "QUEUE_URL=$QUEUE_URL"
+      echo "BUILD_NUMBER=$BUILD_NUMBER"
     outputs:
       - name: trigger
         extract: stdout
 
-  # jenkins-wait-queue — poll queue item until it has executable.number.
-  jenkins-wait-queue:
+  # jenkins-wait-build — poll get_build(N) until building=false; check SUCCESS.
+  # The build may not exist immediately after trigger (it's queued first);
+  # get_build returns 404 (is_error=true) in that window — keep polling.
+  jenkins-wait-build:
     worktree: false
     project: "{{input.project}}"
     mode: shell
@@ -467,70 +499,35 @@ nodes:
       T=$'{{nodes.jenkins-trigger.outputs.trigger}}'
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$T"
 
-      TIMEOUT='{{input.jenkins_queue_timeout_sec}}'
-      TIMEOUT=${TIMEOUT:-600}
+      Q_TIMEOUT='{{input.jenkins_queue_timeout_sec}}'; Q_TIMEOUT=${Q_TIMEOUT:-600}
+      B_TIMEOUT='{{input.jenkins_build_timeout_sec}}'; B_TIMEOUT=${B_TIMEOUT:-3600}
+      TOTAL_TIMEOUT=$(( Q_TIMEOUT + B_TIMEOUT ))
       START=$(date +%s)
 
-      QI_ARGS=$(jq -nc --arg i "$JENKINS_INSTANCE" --arg q "$QUEUE_ID" '{instance: $i, queue_item_id: $q}')
-      echo "→ polling queue item $QUEUE_ID (timeout ${TIMEOUT}s)" >&2
+      body_only() { sed '1,/^$/d'; }
 
+      B_ARGS=$(jq -nc --arg i "$JENKINS_INSTANCE" --arg j "$JENKINS_JOB" --argjson n "$BUILD_NUMBER" \
+        '{instance: $i, job_path: $j, build_number: $n}')
+      echo "→ polling get_build #$BUILD_NUMBER (timeout ${TOTAL_TIMEOUT}s)" >&2
+
+      RESULT=""
       while :; do
         ELAPSED=$(( $(date +%s) - START ))
-        [ "$ELAPSED" -gt "$TIMEOUT" ] && { echo "ERROR: queue wait exceeded ${TIMEOUT}s" >&2; exit 1; }
-        QI=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
-          -H 'content-type: application/json' \
-          --data "{\"plugin_id\":\"jenkins\",\"tool\":\"get_queue_item\",\"input\":$QI_ARGS}" 2>/dev/null || true)
-        BODY=$(echo "$QI" | jq -r '.content // empty')
-        BUILD_NUMBER=$(echo "$BODY" | jq -r '.executable.number // empty')
-        if [ -n "$BUILD_NUMBER" ] && [ "$BUILD_NUMBER" != "null" ]; then
-          echo "   queue → build #$BUILD_NUMBER (after ${ELAPSED}s)" >&2
-          break
-        fi
-        BLOCKED=$(echo "$BODY" | jq -r '.why // empty')
-        [ -n "$BLOCKED" ] && [ "$BLOCKED" != "null" ] && echo "   [${ELAPSED}s] queued: $BLOCKED" >&2
-        sleep 15
-      done
-
-      echo "JENKINS_INSTANCE=$JENKINS_INSTANCE"
-      echo "JENKINS_JOB=$JENKINS_JOB"
-      echo "BUILD_NUMBER=$BUILD_NUMBER"
-      echo "QUEUE_WAIT_SEC=$ELAPSED"
-    outputs:
-      - name: queue
-        extract: stdout
-
-  # jenkins-wait-build — poll get_build until building=false; check SUCCESS.
-  jenkins-wait-build:
-    worktree: false
-    project: "{{input.project}}"
-    mode: shell
-    depends_on:
-      - jenkins-wait-queue
-    prompt: |
-      set -e
-      Q=$'{{nodes.jenkins-wait-queue.outputs.queue}}'
-      while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$Q"
-
-      TIMEOUT='{{input.jenkins_build_timeout_sec}}'
-      TIMEOUT=${TIMEOUT:-3600}
-      START=$(date +%s)
-
-      B_ARGS=$(jq -nc --arg i "$JENKINS_INSTANCE" --arg j "$JENKINS_JOB" --argjson n "$BUILD_NUMBER" '{instance: $i, job_path: $j, build_number: $n}')
-      echo "→ polling build #$BUILD_NUMBER (timeout ${TIMEOUT}s)" >&2
-
-      while :; do
-        ELAPSED=$(( $(date +%s) - START ))
-        [ "$ELAPSED" -gt "$TIMEOUT" ] && { echo "ERROR: build wait exceeded ${TIMEOUT}s (build #$BUILD_NUMBER)" >&2; exit 1; }
+        [ "$ELAPSED" -gt "$TOTAL_TIMEOUT" ] && {
+          echo "ERROR: build #$BUILD_NUMBER did not finish within ${TOTAL_TIMEOUT}s." >&2
+          exit 1
+        }
         B=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
           -H 'content-type: application/json' \
           --data "{\"plugin_id\":\"jenkins\",\"tool\":\"get_build\",\"input\":$B_ARGS}")
         IS_ERR=$(echo "$B" | jq -r '.is_error // false')
         if [ "$IS_ERR" = "true" ]; then
-          echo "   [${ELAPSED}s] get_build error: $(echo "$B" | jq -r '.content' | head -c 200)" >&2
-          sleep 30
+          # Early window: build still queued → get_build 404. Keep polling.
+          echo "   [${ELAPSED}s] build #$BUILD_NUMBER not yet visible (queued?)" >&2
+          sleep 15
           continue
         fi
-        BODY=$(echo "$B" | jq -r '.content')
+        BODY=$(echo "$B" | jq -r '.content' | body_only)
         BUILDING=$(echo "$BODY" | jq -r '.building // false')
         RESULT=$(echo "$BODY" | jq -r '.result // ""')
         if [ "$BUILDING" = "false" ]; then
@@ -541,6 +538,7 @@ nodes:
           fi
           break
         fi
+        echo "   [${ELAPSED}s] build #$BUILD_NUMBER still running…" >&2
         sleep 30
       done
 
@@ -565,6 +563,8 @@ nodes:
       B=$'{{nodes.jenkins-wait-build.outputs.build}}'
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$B"
 
+      body_only() { sed '1,/^$/d'; }
+
       LA_ARGS=$(jq -nc --arg i "$JENKINS_INSTANCE" --arg j "$JENKINS_JOB" --argjson n "$BUILD_NUMBER" '{instance: $i, job_path: $j, build_number: $n}')
       LA=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
         -H 'content-type: application/json' \
@@ -574,7 +574,7 @@ nodes:
         echo "ERROR: jenkins.list_artifacts failed: $(echo "$LA" | jq -r '.content // .error' | head -c 400)" >&2
         exit 1
       fi
-      BODY=$(echo "$LA" | jq -r '.content')
+      BODY=$(echo "$LA" | jq -r '.content' | body_only)
       OUT_REL=$(echo "$BODY" | jq -r '.artifacts[]?.relativePath' | grep -E '\.out$' | head -1)
       if [ -z "$OUT_REL" ]; then
         echo "ERROR: no .out artifact in build #$BUILD_NUMBER. Available:" >&2
