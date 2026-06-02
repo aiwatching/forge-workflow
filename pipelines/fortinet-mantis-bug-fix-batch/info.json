@@ -1,8 +1,8 @@
 {
   "name": "fortinet-mantis-bug-fix-batch",
   "display_name": "Fortinet · Mantis Bug Fix (batch — ids OR filter)",
-  "description": "Batch Fortinet Mantis bug-fix flow. Two ways to pick bugs: (A) comma-list of bug ids in `bug_ids`, OR (B) Mantis filter (keyword/source/status/assignee/reporter/project/query/fix_schedule/category/severity). When bug_ids is empty, a setup node calls mantis.search_bugs to discover ids, then for_each loops the full 10-node single-bug DAG (resolve → fix → MR → notify) per id. v0.5 adds the filter mode + tags MRs with forge:keyword::automation-test when the bug's Keywords contains 'QA Automation Test'.",
-  "version": "0.5.0",
+  "description": "Batch Fortinet Mantis bug-fix flow. Two ways to pick bugs: (A) comma-list of bug ids in `bug_ids`, OR (B) Mantis filter (keyword/source/status/assignee/reporter/project/query/fix_schedule/category/severity). When bug_ids is empty, a setup node calls mantis.search_bugs to discover ids, then for_each loops the full 10-node single-bug DAG (resolve → fix → MR → notify) per id. v0.5 adds the filter mode + tags MRs with forge:keyword::automation_test when the bug's Keywords contains 'QA Automation Test'.",
+  "version": "0.5.1",
   "author": "forge",
   "tags": [
     "fortinet",

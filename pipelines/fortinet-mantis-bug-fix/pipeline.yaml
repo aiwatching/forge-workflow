@@ -19,7 +19,7 @@ description: |
   reporter, assignee, …) is fetched server-side from Mantis via the
   fetch-bug-details node — single source of truth.
 
-version: "0.7.22"
+version: "0.7.23"
 
 input:
   project:
@@ -334,7 +334,7 @@ nodes:
       STATUS=$(echo "$BUG" | jq -r '.status // ""' | tr -d '\n')
       RESOLUTION=$(echo "$BUG" | jq -r '.resolution // ""' | tr -d '\n')
       # Mantis "Keywords" column — used downstream to derive MR labels
-      # (e.g. "QA Automation Test" → forge:keyword::automation-test).
+      # (e.g. "QA Automation Test" → forge:keyword::automation_test).
       KEYWORDS=$(echo "$BUG" | jq -r '.keywords // ""' | tr -d '\n')
 
       echo "BUG_ID=$BUG_ID"
@@ -1290,7 +1290,7 @@ nodes:
 
       # Keyword-derived label: if the Mantis bug's Keywords column
       # contains "QA Automation Test" (case-insensitive substring),
-      # tag the MR with forge:keyword::automation-test. Reviewers /
+      # tag the MR with forge:keyword::automation_test. Reviewers /
       # downstream filters can then spot bugs that already have an
       # automation testcase attached (vs. ones still needing one).
       # Best-effort — failure to attach the label doesn't fail the node.
@@ -1302,9 +1302,9 @@ nodes:
       if echo "$KEYWORDS_LC" | grep -q "qa automation test"; then
         if [ -n "$MR_IID" ] && [ -n "$PID_ENC" ]; then
           if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
-               -f "add_labels=forge:keyword::automation-test" \
+               -f "add_labels=forge:keyword::automation_test" \
                > /dev/null 2>&1; then
-            KEYWORD_LABEL="forge:keyword::automation-test"
+            KEYWORD_LABEL="forge:keyword::automation_test"
           else
             KEYWORD_LABEL="failed (project may lack the label — create once: Settings → Labels)"
           fi
