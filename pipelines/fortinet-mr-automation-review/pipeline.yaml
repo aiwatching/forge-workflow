@@ -61,7 +61,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.5.0"
+version: "0.5.1"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -175,6 +175,13 @@ input:
     type: string
     required: true
     label: "TP lab"
+
+  nac_ssh_user:
+    description: "SSH username for nac.upgrade / nac.get_version. Default 'admin' (FortiNAC stock). The pipeline ALWAYS passes this explicitly because Forge's ssh runtime doesn't fall back to manifest defaults — if your connector-configs.json has username=null, omitting it here makes the call fail with 'ssh: user is required'."
+    type: string
+    required: false
+    default: "admin"
+    label: "NAC SSH user (default 'admin')"
 
   nac_upgrade_timeout_sec:
     description: "Max seconds to wait for the NAC to come back on the target build. Default 1200 (20 min)."
@@ -694,8 +701,11 @@ nodes:
       [ -z "$NAC_IP" ]     && { echo "ERROR: NAC_IP empty" >&2; exit 1; }
       [ -z "$IMAGE_PATH" ] && { echo "ERROR: IMAGE_PATH empty" >&2; exit 1; }
 
-      UP_ARGS=$(jq -nc --arg h "$NAC_IP" --arg ip "$IMAGE_PATH" '{host: $h, image_path: $ip}')
-      echo "→ nac.upgrade host=$NAC_IP image=$IMAGE_PATH" >&2
+      NAC_USER=$'{{input.nac_ssh_user}}'
+      NAC_USER=${NAC_USER:-admin}
+      UP_ARGS=$(jq -nc --arg h "$NAC_IP" --arg ip "$IMAGE_PATH" --arg u "$NAC_USER" \
+        '{host: $h, image_path: $ip, username: $u}')
+      echo "→ nac.upgrade host=$NAC_IP user=$NAC_USER image=$IMAGE_PATH" >&2
       RESP=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
         -H 'content-type: application/json' \
         --data "{\"plugin_id\":\"nac\",\"tool\":\"upgrade\",\"input\":$UP_ARGS}")
@@ -739,8 +749,10 @@ nodes:
         exit 0
       fi
 
-      echo "→ NAC did NOT auto-reboot; firing nac.reboot $NAC_IP" >&2
-      RB_ARGS=$(jq -nc --arg h "$NAC_IP" '{host: $h}')
+      NAC_USER=$'{{input.nac_ssh_user}}'
+      NAC_USER=${NAC_USER:-admin}
+      echo "→ NAC did NOT auto-reboot; firing nac.reboot $NAC_IP user=$NAC_USER" >&2
+      RB_ARGS=$(jq -nc --arg h "$NAC_IP" --arg u "$NAC_USER" '{host: $h, username: $u}')
       RB=$(curl -sS -X POST http://127.0.0.1:8403/api/connector-tool \
         -H 'content-type: application/json' \
         --data "{\"plugin_id\":\"nac\",\"tool\":\"reboot\",\"input\":$RB_ARGS}")
@@ -772,8 +784,10 @@ nodes:
       TIMEOUT=${TIMEOUT:-1200}
       START=$(date +%s)
 
-      GV_ARGS=$(jq -nc --arg h "$NAC_IP" '{host: $h}')
-      echo "→ polling nac.get_version $NAC_IP for build $TARGET_BUILD (timeout ${TIMEOUT}s)" >&2
+      NAC_USER=$'{{input.nac_ssh_user}}'
+      NAC_USER=${NAC_USER:-admin}
+      GV_ARGS=$(jq -nc --arg h "$NAC_IP" --arg u "$NAC_USER" '{host: $h, username: $u}')
+      echo "→ polling nac.get_version $NAC_IP user=$NAC_USER for build $TARGET_BUILD (timeout ${TIMEOUT}s)" >&2
 
       while :; do
         ELAPSED=$(( $(date +%s) - START ))
