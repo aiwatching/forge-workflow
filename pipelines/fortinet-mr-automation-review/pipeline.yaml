@@ -61,7 +61,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.4.2"
+version: "0.5.0"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -98,19 +98,30 @@ input:
     default: "forge:keyword::automation_test"
     label: "Keyword label filter"
 
-  label_pass:
-    description: "Label to ADD on test pass. Default: forge:stage::tested_passed"
-    type: string
-    required: false
-    default: "forge:stage::tested_passed"
-    label: "Label · on PASS"
+  # Stage label transitions are HARDCODED (not configurable) — they belong
+  # to Forge's reserved state machine namespace `forge:stage::*`:
+  #   on PASS → add forge:stage::reviewed,  remove needs_review/needs_fix
+  #   on FAIL → add forge:stage::needs_fix, remove needs_review/reviewed
+  # Pipeline operators must NOT override these via input.
+  #
+  # The two fields below are EXTRA tags layered on top — for visibility,
+  # dashboards, queries. They MUST NOT use the `forge:stage::` prefix
+  # (post-to-mr validates and rejects); use any other namespace, e.g.
+  # `forge:test_*`, `qa:*`, `team:*`.
 
-  label_fail:
-    description: "Label to ADD on test fail (any failed or errored test). Default: forge:stage::needs_fix — signals the MR needs developer attention (consistent with the rest of the Fortinet stage machine: ::needs_fix flows back into the bug-fix loop)."
+  extra_label_pass:
+    description: "Optional extra label added to the MR on test PASS, alongside the hardcoded forge:stage::reviewed transition. MUST NOT start with `forge:stage::` (that namespace is reserved). Leave empty to add nothing extra. Default: forge:test_passed"
     type: string
     required: false
-    default: "forge:stage::needs_fix"
-    label: "Label · on FAIL"
+    default: "forge:test_passed"
+    label: "Extra label · on PASS (no forge:stage:: prefix)"
+
+  extra_label_fail:
+    description: "Optional extra label added to the MR on test FAIL, alongside the hardcoded forge:stage::needs_fix transition. MUST NOT start with `forge:stage::` (that namespace is reserved). Leave empty to add nothing extra. Default: forge:test_failed"
+    type: string
+    required: false
+    default: "forge:test_failed"
+    label: "Extra label · on FAIL (no forge:stage:: prefix)"
 
   max_mrs:
     description: "Cap on number of MRs returned by discover-mrs. Default 10."
@@ -931,10 +942,24 @@ nodes:
       U=$'{{nodes.nac-upgrade-kick.outputs.upgrade}}'
       while IFS='=' read -r __k __v; do [[ "$__k" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] && export "$__k=$__v"; done <<< "$U"
 
-      LBL_STAGE=$'{{input.label_stage}}'
-      LBL_PASS=$'{{input.label_pass}}'
-      LBL_FAIL=$'{{input.label_fail}}'
+      EXTRA_PASS=$'{{input.extra_label_pass}}'
+      EXTRA_FAIL=$'{{input.extra_label_fail}}'
       TPL=$'{{input.comment_template}}'
+
+      # Forge-owned stage transitions — HARDCODED, not user-overridable.
+      # forge:stage::* is the reserved namespace for the state machine.
+      STAGE_PASS="forge:stage::reviewed"
+      STAGE_FAIL="forge:stage::needs_fix"
+      STAGE_FILTER="forge:stage::needs_review"   # the discover-mrs trigger
+
+      # Validate: extra labels MUST NOT use forge:stage:: prefix (reserved).
+      for L in "$EXTRA_PASS" "$EXTRA_FAIL"; do
+        if [ -n "$L" ] && echo "$L" | grep -qE '^forge:stage::'; then
+          echo "ERROR: extra labels must not start with 'forge:stage::' (reserved namespace). Got: '$L'" >&2
+          echo "       Use any other namespace, e.g. 'forge:test_passed', 'qa:smoke_ok'." >&2
+          exit 1
+        fi
+      done
 
       [ -z "$MR_IID" ]       && { echo "ERROR: MR_IID missing" >&2; exit 1; }
       [ -z "$PROJECT_PATH" ] && { echo "ERROR: PROJECT_PATH missing" >&2; exit 1; }
@@ -965,24 +990,32 @@ nodes:
         echo "WARN: glab post-note failed:" >&2; echo "$NOTE_RESP" | head -20 >&2;
       }
 
-      if [ "$FINAL" = "pass" ]; then ADD_LABEL="$LBL_PASS"; OTHER="$LBL_FAIL"
-      else                            ADD_LABEL="$LBL_FAIL"; OTHER="$LBL_PASS"; fi
-      REMOVE_LIST=""
-      [ -n "$LBL_STAGE" ] && REMOVE_LIST="$LBL_STAGE"
-      [ -n "$OTHER" ] && REMOVE_LIST="${REMOVE_LIST:+$REMOVE_LIST,}$OTHER"
+      # Build add/remove label lists. Forge-owned stage transitions are
+      # always written; extras are added (or removed when opposite outcome).
+      if [ "$FINAL" = "pass" ]; then
+        ADD_LIST="$STAGE_PASS"
+        REMOVE_LIST="$STAGE_FILTER,$STAGE_FAIL"
+        [ -n "$EXTRA_PASS" ] && ADD_LIST="$ADD_LIST,$EXTRA_PASS"
+        [ -n "$EXTRA_FAIL" ] && REMOVE_LIST="$REMOVE_LIST,$EXTRA_FAIL"
+      else
+        ADD_LIST="$STAGE_FAIL"
+        REMOVE_LIST="$STAGE_FILTER,$STAGE_PASS"
+        [ -n "$EXTRA_FAIL" ] && ADD_LIST="$ADD_LIST,$EXTRA_FAIL"
+        [ -n "$EXTRA_PASS" ] && REMOVE_LIST="$REMOVE_LIST,$EXTRA_PASS"
+      fi
 
       if glab api "projects/${PID_ENC}/merge_requests/${MR_IID}" -X PUT \
-           -f "add_labels=$ADD_LABEL" \
+           -f "add_labels=$ADD_LIST" \
            -f "remove_labels=$REMOVE_LIST" \
            > /dev/null 2>&1; then
-        echo "Posted comment + labels: +$ADD_LABEL -$REMOVE_LIST" >&2
+        echo "Posted comment + labels: +[$ADD_LIST] -[$REMOVE_LIST]" >&2
       else
-        echo "WARN: failed to swap labels (+$ADD_LABEL / -$REMOVE_LIST)" >&2
+        echo "WARN: failed to swap labels (+[$ADD_LIST] / -[$REMOVE_LIST])" >&2
       fi
 
       echo "MR_IID=$MR_IID"
       echo "FINAL=$FINAL"
-      echo "ADDED_LABEL=$ADD_LABEL"
+      echo "ADDED_LABELS=$ADD_LIST"
       echo "REMOVED_LABELS=$REMOVE_LIST"
     outputs:
       - name: posted
