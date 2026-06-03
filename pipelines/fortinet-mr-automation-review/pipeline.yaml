@@ -64,7 +64,7 @@ description: |
     3. In the TP branch, also gate with PLATFORM check — emit __SKIP__
        when PLATFORM != tp so downstream tp- nodes are skipped.
 
-version: "0.6.3"
+version: "0.6.4"
 
 for_each:
   source: "{{nodes.discover-mrs.outputs.mr_iids}}"
@@ -317,9 +317,12 @@ nodes:
 
       IIDS=$(echo "$RESP" | jq -r '[.[]?.iid // empty] | map(tostring) | unique | join(",")')
       if [ -z "$IIDS" ] || [ "$IIDS" = "null" ]; then
-        echo "ERROR: 0 MRs matched labels (state=opened, labels='$LBL_STAGE','$LBL_KW')." >&2
-        echo "       Widen the filter, drop a label, or pass mr_iids explicitly." >&2
-        exit 1
+        # 0 matches is the steady state for a scheduled watcher — no MRs
+        # currently need review. Emit an empty list, exit cleanly. The
+        # for_each loop iterates 0 times → pipeline status = done.
+        echo "Mode B: 0 MRs match labels (state=opened, labels='$LBL_STAGE','$LBL_KW') — nothing to review this tick." >&2
+        printf ''
+        exit 0
       fi
       N=$(echo "$IIDS" | tr ',' '\n' | wc -l | tr -d ' ')
       echo "Resolved $N MR IID(s): $IIDS" >&2
