@@ -28,6 +28,7 @@ description: |
   v0.5: discover-ids setup node + filter inputs (mode B).
   v0.5: push-and-mr also tags MR with forge:keyword::automation_test
         when the bug's Keywords contains "QA Automation Test".
+  v0.6: filter_resolution input (defaults 'open' — skip already-fixed bugs).
 
   Fortinet-specific assumptions:
     - Mantis connector configured (browser-side) so the
@@ -36,7 +37,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.5.2"
+version: "0.6.0"
 
 for_each:
   source: "{{nodes.discover-ids.outputs.bug_ids}}"
@@ -117,6 +118,12 @@ input:
     required: false
     default: ""
     label: "Filter · Severity (comma multi)"
+  filter_resolution:
+    description: "Mantis resolution filter — comma list of names ('open', 'fixed,wont_fix') or ids ('20,60'). Default 'open' so already-fixed bugs are skipped. Set to 'all' to drop the filter. Only used if bug_ids is empty."
+    type: string
+    required: false
+    default: "open"
+    label: "Filter · Resolution (comma multi)"
   filter_max_bugs:
     description: "Max bugs to fetch from search (caps both the search and the for_each loop). Default 25."
     type: number
@@ -239,6 +246,7 @@ nodes:
       R=$'{{input.filter_reporter}}'
       FS=$'{{input.filter_fix_schedule}}'
       SEV=$'{{input.filter_severity}}'
+      RES=$'{{input.filter_resolution}}'
       CAT=$'{{input.filter_category}}'
       MP=$'{{input.mantis_project}}'
       PROJ=$'{{input.project}}'
@@ -259,10 +267,15 @@ nodes:
 
       # Build args JSON, only including non-empty fields. extra_params
       # carries category (search_bugs doesn't model it directly).
+      # 'all' (or empty) → omit resolution → no resolution filter.
+      RES_EFFECTIVE="$RES"
+      [ "$RES_EFFECTIVE" = "all" ] && RES_EFFECTIVE=""
+
       ARGS=$(jq -nc \
         --arg q "$Q" --arg st "$ST" --arg pn "$MP_EFFECTIVE" --arg fs "$FS" \
         --arg a "$A" --arg r "$R" --arg kw "$KW" --arg src "$SRC" \
-        --arg sev "$SEV" --arg cat "$CAT" --argjson lim "${LIM:-25}" \
+        --arg sev "$SEV" --arg res "$RES_EFFECTIVE" --arg cat "$CAT" \
+        --argjson lim "${LIM:-25}" \
         '{}
          | (if $q   != "" then .query        = $q   else . end)
          | (if $st  != "" then .status       = $st  else . end)
@@ -273,6 +286,7 @@ nodes:
          | (if $kw  != "" then .keyword      = $kw  else . end)
          | (if $src != "" then .source       = $src else . end)
          | (if $sev != "" then .severity     = $sev else . end)
+         | (if $res != "" then .resolution   = $res else . end)
          | (if $cat != "" then .extra_params = {category: $cat} else . end)
          | .limit = $lim')
 

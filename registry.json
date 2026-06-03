@@ -104,7 +104,7 @@
       "name": "fortinet-mantis-bug-fix-batch",
       "display_name": "Fortinet \u00b7 Mantis Bug Fix (batch with for_each)",
       "description": "Comma-separated list of Mantis bug ids \u2192 for each id, runs the full 10-node fortinet-mantis-bug-fix flow (resolve \u2192 fix \u2192 MR \u2192 notify). One pipeline run, N iterations visible in same UI, no child dispatches. Single id behaves identically to single-bug pipeline.",
-      "version": "0.5.2",
+      "version": "0.6.0",
       "author": "forge",
       "tags": [
         "fortinet",
