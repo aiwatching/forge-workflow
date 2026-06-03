@@ -29,6 +29,9 @@ description: |
   v0.5: push-and-mr also tags MR with forge:keyword::automation_test
         when the bug's Keywords contains "QA Automation Test".
   v0.6: filter_resolution input (defaults 'open' — skip already-fixed bugs).
+  v0.6.1: filter_query description documents Mantis boolean syntax +
+          gotchas (stopwords, hyphens, 50% rule) + ready-made exclude
+          template. Full reference in MANTIS-ADVANCE-SEARCH.md.
 
   Fortinet-specific assumptions:
     - Mantis connector configured (browser-side) so the
@@ -37,7 +40,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.6.0"
+version: "0.6.1"
 
 for_each:
   source: "{{nodes.discover-ids.outputs.bug_ids}}"
@@ -95,11 +98,26 @@ input:
     default: ""
     label: "Filter · Mantis project name"
   filter_query:
-    description: "Free-text search on bug summary + description. Only used if bug_ids is empty."
+    description: |
+      Mantis full-text search — runs over summary + description + additional info + bug notes (needs $g_use_full_text_search = ON).
+
+      Boolean operators: +word (AND) · -word (NOT) · word1|word2 (OR) · "phrase" (exact) · word* (wildcard) · ( ) precedence.
+
+      Gotchas (read these before writing queries):
+        • Stopwords are silently dropped — wrap stopword phrases in quotes:  `-"no fix applied"` not `-no fix applied`
+        • Hyphenated words get split — quote them:  `-"Auto-fix"` not `-Auto-fix`
+        • Words that appear in >50% of bugs are dropped — use a phrase to bypass
+
+      Ready-to-use template — skip bugs Forge already processed:
+        -"no fix applied" -"Auto-fix" -forge
+
+      Full reference: see MANTIS-ADVANCE-SEARCH.md in this pipeline's package.
+      Only used if bug_ids is empty.
     type: string
     required: false
+    multiline: true
     default: ""
-    label: "Filter · Full-text query"
+    label: "Filter · Full-text query (boolean)"
   filter_fix_schedule:
     description: "Mantis Fix Schedule custom field (e.g. '7.6.7'). Substring match. Only used if bug_ids is empty."
     type: string
