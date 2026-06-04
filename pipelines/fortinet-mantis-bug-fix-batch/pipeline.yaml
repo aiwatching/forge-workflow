@@ -40,7 +40,7 @@ description: |
     - claude-code (CLI Claude) available for the fix step
     - the project lives under projectRoots
 
-version: "0.6.1"
+version: "0.6.2"
 
 for_each:
   source: "{{nodes.discover-ids.outputs.bug_ids}}"
@@ -327,9 +327,10 @@ nodes:
       IDS=$(echo "$BODY" | jq -r '[.bugs[]?.id // empty] | map(tostring) | unique | join(",")')
 
       if [ -z "$IDS" ] || [ "$IDS" = "null" ]; then
-        echo "ERROR: search_bugs returned 0 bugs for the filter combo above. Either widen the filter or use bug_ids directly." >&2
-        echo "       (server-side total_matching = $TOTAL_MATCH)" >&2
-        exit 1
+        echo "Mode B: 0 bugs matched the filter (server-side total_matching=$TOTAL_MATCH). Skipping per-bug iterations." >&2
+        echo "        for_each consumer will see an empty CSV → downstream nodes do not run." >&2
+        printf ''
+        exit 0
       fi
 
       N=$(echo "$IDS" | tr ',' '\n' | wc -l | tr -d ' ')
